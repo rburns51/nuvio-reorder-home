@@ -5,3 +5,7 @@
 __pycache__/
 *.pyc
 .DS_Store
+*.bak_*
+*.bak.*
+patch_*.py
+.phase3_security_backup_*/
