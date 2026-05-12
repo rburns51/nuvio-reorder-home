@@ -1,12 +1,11 @@
-
 services:
   nuvio-reorder:
     build: .
     container_name: nuvio-reorder
     restart: unless-stopped
+    init: true
 
-    # Phase 3 hardening: standalone env only.
-    # Do not point this public-facing utility at the main NuvioSync environment file.
+    # Standalone env only. Do not point this public-facing utility at a parent NuvioSync .env.
     env_file:
       - .env
 
@@ -19,6 +18,8 @@ services:
       - PERMANENT_SESSION_LIFETIME_HOURS=8
       - PORT=7862
       - LOG_LEVEL=INFO
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=120
       - NUVIO_API_DEBUG=false
       - PUBLIC_ERROR_DETAILS=false
       - SECURITY_HEADERS=true
@@ -31,15 +32,32 @@ services:
       - API_RATE_LIMIT_WINDOW=60
       - MAX_CONTENT_LENGTH_BYTES=2097152
 
+    # No host port is published. Traefik reaches this service over the Docker network.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    mem_limit: 512m
+
     dns:
       - 8.8.8.8
       - 1.1.1.1
 
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.nuvio-reorder.rule=Host(`nuvio-reorder.sedation.us`)"
+      - "traefik.http.routers.nuvio-reorder.rule=Host(`${NUVIO_REORDER_HOST:?Set NUVIO_REORDER_HOST in .env}`)"
       - "traefik.http.routers.nuvio-reorder.entrypoints=websecure"
-      - "traefik.http.routers.nuvio-reorder.tls.certresolver=myresolver"
+      - "traefik.http.routers.nuvio-reorder.tls.certresolver=${TRAEFIK_CERTRESOLVER:-myresolver}"
       - "traefik.http.routers.nuvio-reorder.middlewares=nuvio-reorder-security"
       - "traefik.http.middlewares.nuvio-reorder-security.headers.stsSeconds=31536000"
       - "traefik.http.middlewares.nuvio-reorder-security.headers.stsIncludeSubdomains=true"
@@ -56,3 +74,4 @@ services:
 networks:
   traefik_proxy:
     external: true
+    name: ${TRAEFIK_NETWORK:-traefik_proxy}

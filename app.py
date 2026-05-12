@@ -270,9 +270,8 @@ _LOCKOUT_UNTIL: Dict[str, float] = {}
 
 
 def _client_key() -> str:
-    forwarded = request.headers.get("X-Forwarded-For", "")
-    ip = forwarded.split(",", 1)[0].strip() if forwarded else (request.remote_addr or "unknown")
-    return ip[:128]
+    ip = request.remote_addr or "unknown"
+    return str(ip)[:128]
 
 
 def _hash_value(value: str) -> str:
@@ -423,7 +422,7 @@ def health():
 def session_login():
     if not NUVIO_ANON_KEY:
         return jsonify({"error": _public_error("missing config", "config")}), 503
-    req = request.json or {}
+    req = request.get_json(silent=True) or {}
     email = str(req.get("email") or "").strip()
     password = str(req.get("password") or "")
     if not email or not password:
@@ -543,7 +542,7 @@ def _state_payload_for_profile(profile_id: int, platform: str) -> Tuple[Dict[str
 @app.route("/api/nuvio/reorder-home/state", methods=["POST"])
 @require_nuvio_session
 def reorder_home_state():
-    req = request.json or {}
+    req = request.get_json(silent=True) or {}
     profile_id_raw = req.get("profile_id")
     platform_raw = req.get("platform") or "tv"
     try:
@@ -565,7 +564,7 @@ def reorder_home_state():
 @app.route("/api/nuvio/reorder-home/save", methods=["PATCH"])
 @require_nuvio_session
 def reorder_home_save():
-    req = request.json or {}
+    req = request.get_json(silent=True) or {}
     platform_raw = req.get("platform") or "tv"
     save_scope_raw = req.get("save_platform_scope") or platform_raw
     profile_id_raw = req.get("profile_id")

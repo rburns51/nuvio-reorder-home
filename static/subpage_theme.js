@@ -1,12 +1,21 @@
 (() => {
   const THEME_KEY = 'nuvio-sync-theme';
+  let initialized = false;
+
+  function safeGet(key) {
+    try { return window.localStorage.getItem(key); } catch (_err) { return null; }
+  }
+
+  function safeSet(key, value) {
+    try { window.localStorage.setItem(key, value); } catch (_err) {}
+  }
 
   function currentTheme() {
     return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
   }
 
   function preferredTheme() {
-    const saved = localStorage.getItem(THEME_KEY);
+    const saved = safeGet(THEME_KEY);
     if (saved === 'light' || saved === 'dark') return saved;
     const prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
     return prefersLight ? 'light' : 'dark';
@@ -20,20 +29,23 @@
     document.querySelectorAll('[data-theme-toggle]').forEach((button) => {
       button.setAttribute('aria-pressed', theme === 'dark' ? 'true' : 'false');
       button.setAttribute('aria-label', theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
+      button.setAttribute('title', theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
     });
   }
 
   function applyTheme(theme, event = null) {
+    const nextTheme = theme === 'light' ? 'light' : 'dark';
     const doApply = () => {
-      document.documentElement.setAttribute('data-theme', theme);
-      localStorage.setItem(THEME_KEY, theme);
-      renderToggle(theme);
+      document.documentElement.setAttribute('data-theme', nextTheme);
+      safeSet(THEME_KEY, nextTheme);
+      renderToggle(nextTheme);
+      window.dispatchEvent(new CustomEvent('nuvio-theme-changed', { detail: { theme: nextTheme } }));
     };
 
-    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (!reducedMotion && event && document.startViewTransition) {
-      const x = event.clientX;
-      const y = event.clientY;
+      const x = event.clientX || Math.floor(window.innerWidth / 2);
+      const y = event.clientY || 0;
       const maxRadius = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y));
       const transition = document.startViewTransition(doApply);
       transition.ready.then(() => {
@@ -59,10 +71,16 @@
 
   function bindAllToggles() {
     document.querySelectorAll('[data-theme-toggle]').forEach(bindToggle);
+    renderToggle(currentTheme());
   }
 
   function init() {
-    applyTheme(preferredTheme());
+    if (!initialized) {
+      initialized = true;
+      applyTheme(preferredTheme());
+    } else {
+      renderToggle(currentTheme());
+    }
     bindAllToggles();
   }
 
@@ -72,8 +90,15 @@
     bindToggle,
     bindAllToggles,
     preferredTheme,
+    currentTheme,
     key: THEME_KEY,
   };
 
   document.documentElement.setAttribute('data-theme', preferredTheme());
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init, { once: true });
+  } else {
+    init();
+  }
 })();
