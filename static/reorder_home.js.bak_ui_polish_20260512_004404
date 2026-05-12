@@ -1,0 +1,959 @@
+/**
+ * Standalone Nuvio Reorder Home UI.
+ * No saved targets, no local database, no manifest visibility.
+ */
+'use strict';
+
+const bootstrap = window.reorderHomeBootstrap || {};
+let CSRF_TOKEN = bootstrap.csrfToken || '';
+
+let loggedIn = Boolean(bootstrap.loggedIn);
+let selectedProfileId = null;
+let profiles = [];
+let baseRows = [];
+let viewMode = 'custom';
+let searchQuery = '';
+let searchMatchKeys = [];
+let searchMatchIndex = -1;
+let rowTypeFilter = 'all';
+let statusFilter = 'all';
+let duplicatesOnly = false;
+let hideHiddenCatalogs = false;
+let positionEditUnlocked = false;
+let loadInFlight = false;
+let saveInFlight = false;
+let profilesInFlight = false;
+let removedRowKeys = new Set();
+let selectedCatalogKeys = new Set();
+let undoOrderStack = [];
+let savedRowsFingerprint = '';
+let loadedProfileSummary = null;
+let loadedAtTimestamp = null;
+let selectedPlatform = 'tv';
+let savePlatformScope = 'tv';
+let lastHomeHealth = null;
+let stateEffectiveAddonProfileId = null;
+let stateAddonInventorySource = 'selected_profile';
+let stateInheritedAddonProfiles = [];
+let pendingApplyHomeToInheritedProfileIds = [];
+let dragKey = null;
+const MAX_ORDER_UNDO = 12;
+
+const el = {
+  loginCard: document.getElementById('loginCard'),
+  appShell: document.getElementById('appShell'),
+  emailInput: document.getElementById('emailInput'),
+  passwordInput: document.getElementById('passwordInput'),
+  loginBtn: document.getElementById('loginBtn'),
+  loginStatus: document.getElementById('loginStatus'),
+  logoutBtn: document.getElementById('logoutBtn'),
+  sessionLabel: document.getElementById('sessionLabel'),
+  profileList: document.getElementById('profileList'),
+  refreshProfilesBtn: document.getElementById('refreshProfilesBtn'),
+  loadStateBtn: document.getElementById('loadStateBtn'),
+  emptyLoadBtn: document.getElementById('emptyLoadBtn'),
+  platformSelect: document.getElementById('platformSelect'),
+  savePlatformScopeSelect: document.getElementById('savePlatformScopeSelect'),
+  inheritedApplyPanel: document.getElementById('inheritedApplyPanel'),
+  reloadBtn: document.getElementById('reloadBtn'),
+  saveBtn: document.getElementById('saveBtn'),
+  rowList: document.getElementById('rowList'),
+  rowCountLabel: document.getElementById('rowCountLabel'),
+  infoBar: document.getElementById('infoBar'),
+  revertBanner: document.getElementById('revertBanner'),
+  syncProgressBanner: document.getElementById('syncProgressBanner'),
+  toastRegion: document.getElementById('toastRegion'),
+  themeBtn: document.getElementById('themeToggleBtn'),
+  viewModeCustomBtn: document.getElementById('viewModeCustomBtn'),
+  viewModeAlphaBtn: document.getElementById('viewModeAlphaBtn'),
+  searchInput: document.getElementById('searchInput'),
+  searchPrevBtn: document.getElementById('searchPrevBtn'),
+  searchNextBtn: document.getElementById('searchNextBtn'),
+  searchMatchLabel: document.getElementById('searchMatchLabel'),
+  rowTypeFilter: document.getElementById('rowTypeFilter'),
+  statusFilter: document.getElementById('statusFilter'),
+  duplicatesOnlyToggle: document.getElementById('duplicatesOnlyToggle'),
+  hideHiddenCatalogsToggle: document.getElementById('hideHiddenCatalogsToggle'),
+  positionEditToggle: document.getElementById('positionEditToggle'),
+  orderUnsavedPill: document.getElementById('orderUnsavedPill'),
+  orderSaveStatusNote: document.getElementById('orderSaveStatusNote'),
+  undoOrderBtn: document.getElementById('undoOrderBtn'),
+  reorderProfileHealth: document.getElementById('reorderProfileHealth'),
+  healthProfileLabel: document.getElementById('healthProfileLabel'),
+  healthPlatformLabel: document.getElementById('healthPlatformLabel'),
+  healthHomeRowCount: document.getElementById('healthHomeRowCount'),
+  healthHiddenCount: document.getElementById('healthHiddenCount'),
+  healthDuplicateOrderCount: document.getElementById('healthDuplicateOrderCount'),
+  healthProfileDetail: document.getElementById('healthProfileDetail'),
+  bulkSelectBar: document.getElementById('bulkSelectBar'),
+  bulkSelectedCount: document.getElementById('bulkSelectedCount'),
+  selectVisibleCatalogsBtn: document.getElementById('selectVisibleCatalogsBtn'),
+  clearCatalogSelectionBtn: document.getElementById('clearCatalogSelectionBtn'),
+  hideSelectedCatalogsBtn: document.getElementById('hideSelectedCatalogsBtn'),
+  showSelectedCatalogsBtn: document.getElementById('showSelectedCatalogsBtn'),
+};
+
+async function apiFetch(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+  if (CSRF_TOKEN && ['POST', 'PATCH', 'PUT', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())) {
+    headers['X-CSRF-Token'] = CSRF_TOKEN;
+  }
+  const resp = await fetch(path, { credentials: 'same-origin', ...options, headers });
+  if (resp.status === 401) {
+    loggedIn = false;
+    showLoggedOutUi();
+    throw new Error('Session expired. Please log in again.');
+  }
+  return resp;
+}
+
+async function apiPost(path, body) {
+  return apiFetch(path, { method: 'POST', body: JSON.stringify(body || {}) });
+}
+
+async function apiPatch(path, body) {
+  return apiFetch(path, { method: 'PATCH', body: JSON.stringify(body || {}) });
+}
+
+function escHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function normalizeText(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function showToast(message, type = 'success', duration = 3500) {
+  if (!el.toastRegion) return;
+  const icon = type === 'success' ? 'bi-check-circle-fill' : 'bi-exclamation-circle-fill';
+  const div = document.createElement('div');
+  div.className = `toast ${type}`;
+  div.innerHTML = `<i class="bi ${icon}"></i><span>${escHtml(message)}</span>`;
+  el.toastRegion.appendChild(div);
+  setTimeout(() => {
+    div.style.transition = 'opacity .3s ease';
+    div.style.opacity = '0';
+    setTimeout(() => div.remove(), 320);
+  }, duration);
+}
+
+function setLoginStatus(message, type = 'info') {
+  if (!el.loginStatus) return;
+  if (!message) {
+    el.loginStatus.style.display = 'none';
+    el.loginStatus.textContent = '';
+    return;
+  }
+  el.loginStatus.style.display = '';
+  el.loginStatus.textContent = message;
+  el.loginStatus.style.borderColor = type === 'error' ? 'rgba(239,68,68,.45)' : '';
+}
+
+function platformLabel(value) { return value === 'mobile' ? 'Mobile' : 'TV'; }
+function platformScopeLabel(value) { return value === 'both' ? 'TV + Mobile' : `${platformLabel(value)} only`; }
+function formatCount(value, singular, plural = `${singular}s`) {
+  const count = Number(value || 0);
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function rowDisplayTitle(row) {
+  return String(row?.title || row?.raw_title || row?.catalog_id || row?.collection_id || row?.key || '');
+}
+
+function rowSearchText(row) {
+  return normalizeText([
+    row?.title,
+    row?.raw_title,
+    row?.custom_title,
+    row?.addon_name,
+    row?.manifest_id,
+    row?.catalog_type,
+    row?.catalog_id,
+    row?.collection_id,
+    row?.row_type,
+    row?.key,
+    row?.catalog_key,
+    row?.home_visibility_label,
+    row?.addon_url,
+  ].filter(Boolean).join(' '));
+}
+
+function isCatalogRow(row) { return row?.row_type === 'catalog'; }
+function rowByKey(key) { return baseRows.find((row) => row.key === key) || null; }
+function orderKeys(rows = baseRows) { return rows.map((row) => String(row?.key || '')).filter(Boolean); }
+
+function currentRowsFingerprint() {
+  return JSON.stringify({
+    rows: baseRows.map((row) => ({ key: row.key, enabled: row.enabled !== false })),
+    removed_keys: [...removedRowKeys].sort(),
+  });
+}
+
+function hasPendingSaveIntent() {
+  return Boolean(baseRows.length && (pendingApplyHomeToInheritedProfileIds.length || savePlatformScope !== selectedPlatform));
+}
+
+function hasUnsavedChanges() {
+  const rowsDirty = Boolean(savedRowsFingerprint && baseRows.length && currentRowsFingerprint() !== savedRowsFingerprint);
+  return rowsDirty || hasPendingSaveIntent();
+}
+
+function setOrderSaveStatus(message) {
+  if (el.orderSaveStatusNote) el.orderSaveStatusNote.textContent = String(message || '');
+}
+
+function currentSelectedProfile() {
+  return profiles.find((profile) => Number(profile?.resolved_profile_id ?? profile?.profile_id ?? profile?.id) === Number(selectedProfileId)) || null;
+}
+
+function profileAddonCount(profile) {
+  const count = Number(profile?.addon_count ?? profile?.addonCount ?? 0);
+  return Number.isFinite(count) && count >= 0 ? count : 0;
+}
+
+function profileMetaLine(profile, profileId) {
+  const inherited = profile?.inherits_primary_addons ? ' · inherits Profile 1 add-ons' : '';
+  return `Profile ${profileId} · ${profileAddonCount(profile)} add-ons${inherited}`;
+}
+
+function duplicateSignature(row) { return normalizeText(rowDisplayTitle(row)); }
+function getDuplicateCounts(rows = baseRows) {
+  const counts = new Map();
+  rows.forEach((row) => {
+    const sig = duplicateSignature(row);
+    if (!sig) return;
+    counts.set(sig, (counts.get(sig) || 0) + 1);
+  });
+  return counts;
+}
+
+function rowHealthSummary(rows = baseRows) {
+  const catalogRows = rows.filter((row) => row.row_type === 'catalog');
+  const collectionRows = rows.filter((row) => row.row_type === 'collection');
+  const hiddenRows = rows.filter((row) => row.enabled === false);
+  const duplicateCounts = getDuplicateCounts(rows);
+  const duplicateTitleCount = [...duplicateCounts.values()].filter((count) => count > 1).length;
+  return {
+    total: rows.length,
+    catalogs: catalogRows.length,
+    collections: collectionRows.length,
+    hidden: hiddenRows.length,
+    visible: rows.length - hiddenRows.length,
+    duplicateTitleCount,
+    duplicateRawOrderCount: Number(lastHomeHealth?.duplicate_raw_order_count || 0),
+    orphanCollectionCount: rows.filter((row) => row.is_orphan_collection).length,
+  };
+}
+
+function showLoggedOutUi() {
+  loggedIn = false;
+  CSRF_TOKEN = '';
+  selectedProfileId = null;
+  profiles = [];
+  baseRows = [];
+  savedRowsFingerprint = '';
+  removedRowKeys.clear();
+  selectedCatalogKeys.clear();
+  if (el.loginCard) el.loginCard.hidden = false;
+  if (el.appShell) el.appShell.hidden = true;
+  if (el.logoutBtn) el.logoutBtn.hidden = true;
+  if (el.sessionLabel) el.sessionLabel.hidden = true;
+  renderRows();
+}
+
+function showLoggedInUi(email = bootstrap.email || '') {
+  loggedIn = true;
+  if (el.loginCard) el.loginCard.hidden = true;
+  if (el.appShell) el.appShell.hidden = false;
+  if (el.logoutBtn) el.logoutBtn.hidden = false;
+  if (el.sessionLabel) {
+    el.sessionLabel.hidden = false;
+    el.sessionLabel.textContent = email ? `Logged in: ${email}` : 'Logged in temporarily';
+  }
+}
+
+async function handleLogin() {
+  if (!el.loginBtn) return;
+  const email = String(el.emailInput?.value || '').trim();
+  const password = String(el.passwordInput?.value || '');
+  if (!email || !password) {
+    setLoginStatus('Enter your Nuvio email and password first.', 'error');
+    return;
+  }
+  el.loginBtn.disabled = true;
+  setLoginStatus('Logging in to Nuvio…');
+  try {
+    const resp = await fetch('/api/session/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.success) throw new Error(data.error || `Login failed (${resp.status})`);
+    CSRF_TOKEN = data.csrf_token || '';
+    bootstrap.email = data.email || email;
+    if (el.passwordInput) el.passwordInput.value = '';
+    setLoginStatus('');
+    showLoggedInUi(data.email || email);
+    showToast('Logged in. Loading profiles…');
+    await loadProfiles();
+  } catch (err) {
+    setLoginStatus(err.message || String(err), 'error');
+    showToast(err.message || String(err), 'error', 5200);
+  } finally {
+    el.loginBtn.disabled = false;
+  }
+}
+
+async function handleLogout() {
+  try { await fetch('/api/session/logout', { method: 'POST', credentials: 'same-origin' }); } catch (_) {}
+  showLoggedOutUi();
+  showToast('Logged out. Temporary browser session cleared.');
+}
+
+function renderProfiles() {
+  if (!el.profileList) return;
+  if (profilesInFlight) {
+    el.profileList.innerHTML = '<p class="hint">Loading profiles…</p>';
+    return;
+  }
+  if (!profiles.length) {
+    el.profileList.innerHTML = '<p class="hint">No profiles found. Refresh after logging in.</p>';
+    return;
+  }
+  el.profileList.innerHTML = profiles.map((profile) => {
+    const pid = Number(profile?.resolved_profile_id ?? profile?.profile_id ?? profile?.id);
+    const name = profile?.name || profile?.profile_name || `Profile ${pid}`;
+    const active = Number(selectedProfileId) === pid;
+    const badge = pid === 1 ? '<span class="chip">Primary</span>' : (profile?.inherits_primary_addons ? '<span class="chip">Inherits add-ons</span>' : '');
+    return `<button class="list-item ${active ? 'is-active' : ''}" type="button" data-profile-id="${pid}">
+      <span><strong>${escHtml(name)}</strong><small>${escHtml(profileMetaLine(profile, pid))}</small></span>${badge}
+    </button>`;
+  }).join('');
+  el.profileList.querySelectorAll('[data-profile-id]').forEach((btn) => {
+    btn.addEventListener('click', () => selectProfile(Number(btn.dataset.profileId)));
+  });
+}
+
+async function loadProfiles() {
+  if (!loggedIn || profilesInFlight) return;
+  profilesInFlight = true;
+  renderProfiles();
+  try {
+    const resp = await apiPost('/api/nuvio/profiles', {});
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.success) throw new Error(data.error || `Failed to load profiles (${resp.status})`);
+    profiles = Array.isArray(data.profiles) ? data.profiles : [];
+    if (!selectedProfileId && profiles.length) {
+      selectedProfileId = Number(profiles[0]?.resolved_profile_id ?? profiles[0]?.profile_id ?? 1);
+    }
+    renderProfiles();
+    updateButtons();
+  } catch (err) {
+    el.profileList.innerHTML = `<p class="hint">${escHtml(err.message || String(err))}</p>`;
+    showToast(err.message || String(err), 'error', 5200);
+  } finally {
+    profilesInFlight = false;
+    renderProfiles();
+  }
+}
+
+function selectProfile(profileId) {
+  selectedProfileId = Number(profileId);
+  clearLoadedRows();
+  renderProfiles();
+  updateButtons();
+  renderReorderProfileHealth();
+}
+
+function clearLoadedRows() {
+  baseRows = [];
+  removedRowKeys.clear();
+  selectedCatalogKeys.clear();
+  undoOrderStack = [];
+  savedRowsFingerprint = '';
+  loadedProfileSummary = null;
+  loadedAtTimestamp = null;
+  lastHomeHealth = null;
+  stateInheritedAddonProfiles = [];
+  pendingApplyHomeToInheritedProfileIds = [];
+  renderInheritedApplyPanel();
+  renderRows();
+  refreshDirtyUi();
+}
+
+function renderInheritedApplyPanel() {
+  if (!el.inheritedApplyPanel) return;
+  if (!stateInheritedAddonProfiles.length || Number(selectedProfileId) !== 1) {
+    el.inheritedApplyPanel.style.display = 'none';
+    el.inheritedApplyPanel.innerHTML = '';
+    pendingApplyHomeToInheritedProfileIds = [];
+    return;
+  }
+  el.inheritedApplyPanel.style.display = '';
+  const boxes = stateInheritedAddonProfiles.map((profile) => {
+    const pid = Number(profile.profile_id);
+    const checked = pendingApplyHomeToInheritedProfileIds.includes(pid);
+    return `<label class="inline-check"><input type="checkbox" data-inherited-profile-id="${pid}" ${checked ? 'checked' : ''}> Apply saves to ${escHtml(profile.name || `Profile ${pid}`)}</label>`;
+  }).join('');
+  el.inheritedApplyPanel.innerHTML = `<strong style="display:block;margin-bottom:.4rem;"><i class="bi bi-diagram-3"></i> Inherited profile Home layout</strong><p class="hint" style="margin-bottom:.5rem;">These profiles inherit Profile 1 add-ons, but Home layout is still profile-specific. Check any that should receive the same saved layout.</p>${boxes}`;
+  el.inheritedApplyPanel.querySelectorAll('[data-inherited-profile-id]').forEach((box) => {
+    box.addEventListener('change', () => {
+      const id = Number(box.dataset.inheritedProfileId);
+      const set = new Set(pendingApplyHomeToInheritedProfileIds);
+      if (box.checked) set.add(id); else set.delete(id);
+      pendingApplyHomeToInheritedProfileIds = [...set].sort((a, b) => a - b);
+      refreshDirtyUi();
+    });
+  });
+}
+
+async function loadState() {
+  if (!selectedProfileId || loadInFlight) return;
+  loadInFlight = true;
+  selectedCatalogKeys.clear();
+  removedRowKeys.clear();
+  undoOrderStack = [];
+  savedRowsFingerprint = '';
+  updateButtons();
+  showBanner('Loading Home rows, add-ons, collections, and manifest titles…');
+  renderRows(true);
+  try {
+    const resp = await apiPost('/api/nuvio/reorder-home/state', { profile_id: selectedProfileId, platform: selectedPlatform });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.success) throw new Error(data.error || `Failed to load Home rows (${resp.status})`);
+    baseRows = Array.isArray(data.rows) ? data.rows : [];
+    loadedProfileSummary = data.profile || currentSelectedProfile();
+    loadedAtTimestamp = new Date();
+    lastHomeHealth = data.home_health || null;
+    stateEffectiveAddonProfileId = data.effective_addon_profile_id || selectedProfileId;
+    stateAddonInventorySource = data.addon_inventory_source || 'selected_profile';
+    stateInheritedAddonProfiles = Array.isArray(data.inherited_addon_profiles) ? data.inherited_addon_profiles : [];
+    pendingApplyHomeToInheritedProfileIds = [];
+    savedRowsFingerprint = currentRowsFingerprint();
+    renderInheritedApplyPanel();
+    renderRows();
+    renderReorderProfileHealth();
+    refreshDirtyUi();
+    showToast(`Loaded ${baseRows.length} Home rows for ${platformLabel(selectedPlatform)}.`);
+  } catch (err) {
+    baseRows = [];
+    renderRows();
+    showToast(err.message || String(err), 'error', 6000);
+  } finally {
+    loadInFlight = false;
+    showBanner('');
+    updateButtons();
+  }
+}
+
+function showBanner(message) {
+  if (!el.syncProgressBanner) return;
+  if (!message) {
+    el.syncProgressBanner.style.display = 'none';
+    el.syncProgressBanner.textContent = '';
+    return;
+  }
+  el.syncProgressBanner.style.display = '';
+  el.syncProgressBanner.textContent = message;
+}
+
+function visibleRowsByFilters(rows) {
+  let displayRows = [...rows];
+  if (viewMode === 'alpha') {
+    displayRows.sort((a, b) => rowDisplayTitle(a).localeCompare(rowDisplayTitle(b), undefined, { sensitivity: 'base' }));
+  }
+  if (rowTypeFilter !== 'all') displayRows = displayRows.filter((row) => row.row_type === rowTypeFilter);
+  if (statusFilter === 'visible') displayRows = displayRows.filter((row) => row.enabled !== false);
+  if (statusFilter === 'hidden') displayRows = displayRows.filter((row) => row.enabled === false);
+  if (statusFilter === 'warnings') displayRows = displayRows.filter((row) => row.row_warning || row.is_orphan_collection || row.raw_order_duplicate);
+  if (hideHiddenCatalogs) displayRows = displayRows.filter((row) => row.enabled !== false);
+  if (duplicatesOnly) {
+    const duplicateCounts = getDuplicateCounts(baseRows);
+    displayRows = displayRows.filter((row) => row.raw_order_duplicate || duplicateCounts.get(duplicateSignature(row)) > 1);
+  }
+  if (searchQuery) {
+    const q = normalizeText(searchQuery);
+    displayRows = displayRows.filter((row) => rowSearchText(row).includes(q));
+  }
+  return displayRows;
+}
+
+function getDisplayRows() { return visibleRowsByFilters(baseRows); }
+
+function updateSearchMatches() {
+  const q = normalizeText(searchQuery);
+  if (!q) {
+    searchMatchKeys = [];
+    searchMatchIndex = -1;
+    if (el.searchMatchLabel) el.searchMatchLabel.textContent = 'No search';
+    if (el.searchPrevBtn) el.searchPrevBtn.disabled = true;
+    if (el.searchNextBtn) el.searchNextBtn.disabled = true;
+    return;
+  }
+  searchMatchKeys = baseRows.filter((row) => rowSearchText(row).includes(q)).map((row) => row.key);
+  if (!searchMatchKeys.length) searchMatchIndex = -1;
+  else if (searchMatchIndex < 0 || searchMatchIndex >= searchMatchKeys.length) searchMatchIndex = 0;
+  if (el.searchMatchLabel) el.searchMatchLabel.textContent = searchMatchKeys.length ? `${searchMatchIndex + 1} of ${searchMatchKeys.length}` : 'No matches';
+  if (el.searchPrevBtn) el.searchPrevBtn.disabled = searchMatchKeys.length < 2;
+  if (el.searchNextBtn) el.searchNextBtn.disabled = searchMatchKeys.length < 2;
+}
+
+function jumpSearch(delta) {
+  if (!searchMatchKeys.length) return;
+  searchMatchIndex = (searchMatchIndex + delta + searchMatchKeys.length) % searchMatchKeys.length;
+  renderRows();
+  const key = searchMatchKeys[searchMatchIndex];
+  const node = el.rowList?.querySelector(`[data-row-key="${CSS.escape(key)}"]`);
+  if (node) node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function renderRows(loading = false) {
+  if (!el.rowList) return;
+  updateSearchMatches();
+  if (loading) {
+    el.rowList.innerHTML = Array.from({ length: 8 }).map(() => '<div class="rh-skeleton"></div>').join('');
+    return;
+  }
+  if (!baseRows.length) {
+    el.rowList.innerHTML = `<div class="empty-state"><i class="bi bi-list-ol"></i><p>Select a profile, then load your Home rows to begin reordering.</p><button id="emptyLoadBtnDynamic" class="btn btn-primary" type="button" ${selectedProfileId ? '' : 'disabled'}><i class="bi bi-cloud-download"></i> Load Home rows</button></div>`;
+    document.getElementById('emptyLoadBtnDynamic')?.addEventListener('click', loadState);
+    if (el.rowCountLabel) el.rowCountLabel.textContent = '';
+    updateBulkSelectionUi();
+    renderReorderProfileHealth();
+    return;
+  }
+  const displayRows = getDisplayRows();
+  if (el.rowCountLabel) el.rowCountLabel.textContent = `${displayRows.length} shown · ${baseRows.length} total`;
+  if (el.revertBanner) el.revertBanner.style.display = viewMode === 'alpha' ? '' : 'none';
+  if (el.infoBar) {
+    el.infoBar.style.display = displayRows.length !== baseRows.length ? '' : 'none';
+    el.infoBar.textContent = displayRows.length !== baseRows.length ? `Showing ${displayRows.length} filtered rows out of ${baseRows.length}. Save still preserves all loaded rows.` : '';
+  }
+  if (!displayRows.length) {
+    el.rowList.innerHTML = '<div class="empty-state"><i class="bi bi-search"></i><p>No rows match the current filters.</p></div>';
+    updateBulkSelectionUi();
+    return;
+  }
+  const duplicateCounts = getDuplicateCounts(baseRows);
+  const currentSearchKey = searchMatchKeys[searchMatchIndex] || '';
+  el.rowList.innerHTML = displayRows.map((row, displayIndex) => renderRow(row, displayIndex, duplicateCounts, currentSearchKey)).join('');
+  wireRows();
+  updateBulkSelectionUi();
+  refreshDirtyUi();
+}
+
+function renderRow(row, displayIndex, duplicateCounts, currentSearchKey) {
+  const canonicalIndex = baseRows.findIndex((item) => item.key === row.key);
+  const typeLabel = row.row_type === 'collection' ? 'Collection' : 'Catalog';
+  const title = rowDisplayTitle(row);
+  const subParts = [];
+  if (row.addon_name) subParts.push(row.addon_name);
+  if (row.catalog_type || row.catalog_id) subParts.push([row.catalog_type, row.catalog_id].filter(Boolean).join(' · '));
+  if (row.collection_id) subParts.push(`Collection ID: ${row.collection_id}`);
+  if (row.folder_count) subParts.push(`${row.folder_count} folder${row.folder_count === 1 ? '' : 's'}`);
+  const subtitle = row.subtitle || subParts.filter(Boolean).join(' · ') || row.key;
+  const hidden = row.enabled === false;
+  const warningTags = [];
+  if (row.raw_order_duplicate) warningTags.push('<span class="rh-row-status warning"><i class="bi bi-exclamation-triangle"></i> Duplicate order</span>');
+  if (duplicateCounts.get(duplicateSignature(row)) > 1) warningTags.push('<span class="rh-row-status warning"><i class="bi bi-files"></i> Similar title</span>');
+  if (row.is_orphan_collection) warningTags.push('<span class="rh-row-status warning"><i class="bi bi-link-45deg"></i> Orphan</span>');
+  if (row.pinned) warningTags.push('<span class="rh-row-status pinned"><i class="bi bi-pin-angle"></i> Pinned</span>');
+  const rowClasses = [
+    'rh-row',
+    hidden ? 'is-hidden-row' : '',
+    searchMatchKeys.includes(row.key) ? 'is-match' : '',
+    currentSearchKey === row.key ? 'is-search-current' : '',
+  ].filter(Boolean).join(' ');
+  const checkbox = row.row_type === 'catalog'
+    ? `<input class="rh-catalog-select-checkbox" type="checkbox" data-action="select-catalog" data-key="${escHtml(row.key)}" ${selectedCatalogKeys.has(row.key) ? 'checked' : ''} aria-label="Select ${escHtml(title)}">`
+    : '<span></span>';
+  const visibilityButton = hidden
+    ? `<button class="rh-row-action-btn" type="button" data-action="toggle-home" data-key="${escHtml(row.key)}" title="Show this row in the Home layout"><i class="bi bi-eye"></i><span>Show</span></button>`
+    : `<button class="rh-row-action-btn" type="button" data-action="toggle-home" data-key="${escHtml(row.key)}" title="Hide this row from the Home layout"><i class="bi bi-eye-slash"></i><span>Hide</span></button>`;
+  const removeButton = row.remove_allowed
+    ? `<button class="rh-row-danger-btn" type="button" data-action="remove-orphan" data-key="${escHtml(row.key)}" title="${escHtml(row.remove_help || 'Remove stale Home row')}"><i class="bi bi-trash"></i><span>Remove orphan</span></button>`
+    : '';
+  const copyButton = row.collection_id
+    ? `<button class="rh-row-action-btn" type="button" data-action="copy-id" data-copy="${escHtml(row.collection_id)}"><i class="bi bi-clipboard"></i><span>Copy ID</span></button>`
+    : '';
+  return `<div class="${rowClasses}" data-row-key="${escHtml(row.key)}" draggable="${viewMode === 'custom' && !loadInFlight && !saveInFlight ? 'true' : 'false'}">
+    <div class="rh-row-controls">
+      <button class="rh-move-btn" type="button" data-action="move-up" data-key="${escHtml(row.key)}" ${canonicalIndex <= 0 || viewMode !== 'custom' ? 'disabled' : ''} title="Move up"><i class="bi bi-chevron-up"></i></button>
+      <button class="rh-move-btn" type="button" data-action="move-down" data-key="${escHtml(row.key)}" ${canonicalIndex >= baseRows.length - 1 || viewMode !== 'custom' ? 'disabled' : ''} title="Move down"><i class="bi bi-chevron-down"></i></button>
+    </div>
+    ${checkbox}
+    <span class="rh-row-drag-handle" title="Drag to reorder"><i class="bi bi-grip-vertical"></i></span>
+    <label class="rh-position-control"><span>#</span><input class="rh-position-input" type="number" min="1" max="${baseRows.length}" value="${canonicalIndex + 1}" data-key="${escHtml(row.key)}" ${positionEditUnlocked && viewMode === 'custom' ? '' : 'readonly'} ${viewMode !== 'custom' ? 'disabled' : ''}></label>
+    <div class="rh-row-info">
+      <div class="rh-row-title">${escHtml(title)}</div>
+      <div class="rh-row-sub">${escHtml(subtitle)}</div>
+      <div class="rh-row-tags">
+        <span class="rh-row-badge ${row.row_type === 'collection' ? 'collection' : 'catalog'}">${escHtml(typeLabel)}</span>
+        ${row.catalog_type && row.row_type === 'catalog' ? `<span class="rh-row-badge type-tag">${escHtml(row.catalog_type)}</span>` : ''}
+        <span class="rh-row-status ${hidden ? 'hidden' : 'visible'}"><i class="bi ${hidden ? 'bi-eye-slash' : 'bi-eye'}"></i> ${hidden ? 'Hidden from Home' : 'Visible in Home'}</span>
+        ${warningTags.join('')}
+      </div>
+    </div>
+    <div class="rh-row-actions">${visibilityButton}${removeButton}${copyButton}</div>
+  </div>`;
+}
+
+function wireRows() {
+  el.rowList.querySelectorAll('[data-action]').forEach((node) => {
+    node.addEventListener('click', (event) => {
+      const action = node.dataset.action;
+      const key = node.dataset.key;
+      if (action === 'toggle-home') toggleRowHomeVisibility(key);
+      if (action === 'remove-orphan') removeOrphanRow(key);
+      if (action === 'move-up') moveRowByDelta(key, -1);
+      if (action === 'move-down') moveRowByDelta(key, 1);
+      if (action === 'copy-id') copyText(node.dataset.copy || '');
+      if (action === 'select-catalog') {
+        if (node.checked) selectedCatalogKeys.add(key); else selectedCatalogKeys.delete(key);
+        updateBulkSelectionUi();
+      }
+      event.stopPropagation();
+    });
+  });
+  el.rowList.querySelectorAll('.rh-position-input').forEach((input) => {
+    input.addEventListener('change', () => moveRowToPosition(input.dataset.key, Number(input.value)));
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') input.blur();
+    });
+    input.addEventListener('focus', () => { if (input.readOnly) input.select(); });
+  });
+  el.rowList.querySelectorAll('.rh-row[draggable="true"]').forEach((rowEl) => {
+    rowEl.addEventListener('dragstart', (event) => {
+      dragKey = rowEl.dataset.rowKey;
+      rowEl.classList.add('is-dragging');
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', dragKey);
+    });
+    rowEl.addEventListener('dragend', () => {
+      dragKey = null;
+      el.rowList.querySelectorAll('.is-dragging,.is-drop-target').forEach((n) => n.classList.remove('is-dragging', 'is-drop-target'));
+    });
+    rowEl.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      if (dragKey && dragKey !== rowEl.dataset.rowKey) rowEl.classList.add('is-drop-target');
+    });
+    rowEl.addEventListener('dragleave', () => rowEl.classList.remove('is-drop-target'));
+    rowEl.addEventListener('drop', (event) => {
+      event.preventDefault();
+      const sourceKey = event.dataTransfer.getData('text/plain') || dragKey;
+      const targetKey = rowEl.dataset.rowKey;
+      rowEl.classList.remove('is-drop-target');
+      moveRowBefore(sourceKey, targetKey);
+    });
+  });
+}
+
+function copyText(text) {
+  if (!text) return;
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(() => showToast('Copied to clipboard.')).catch(() => showToast('Could not copy.', 'error'));
+  } else {
+    showToast(text);
+  }
+}
+
+function pushUndo(label) {
+  undoOrderStack.unshift({ label, keys: orderKeys(), rows: baseRows.map((row) => ({ ...row })) });
+  undoOrderStack = undoOrderStack.slice(0, MAX_ORDER_UNDO);
+}
+
+function moveRowByDelta(key, delta) {
+  if (viewMode !== 'custom') return showToast('Switch to Custom order before moving rows.', 'error');
+  const index = baseRows.findIndex((row) => row.key === key);
+  if (index < 0) return;
+  const nextIndex = Math.max(0, Math.min(baseRows.length - 1, index + delta));
+  if (nextIndex === index) return;
+  pushUndo(`Move ${rowDisplayTitle(baseRows[index])}`);
+  const rows = [...baseRows];
+  const [item] = rows.splice(index, 1);
+  rows.splice(nextIndex, 0, item);
+  baseRows = rows;
+  renderRows();
+  renderReorderProfileHealth();
+  refreshDirtyUi();
+}
+
+function moveRowToPosition(key, position) {
+  if (viewMode !== 'custom') return;
+  const index = baseRows.findIndex((row) => row.key === key);
+  if (index < 0) return;
+  const nextIndex = Math.max(0, Math.min(baseRows.length - 1, Number(position || 1) - 1));
+  if (nextIndex === index) return renderRows();
+  pushUndo(`Move ${rowDisplayTitle(baseRows[index])} to #${nextIndex + 1}`);
+  const rows = [...baseRows];
+  const [item] = rows.splice(index, 1);
+  rows.splice(nextIndex, 0, item);
+  baseRows = rows;
+  renderRows();
+  renderReorderProfileHealth();
+  refreshDirtyUi();
+}
+
+function moveRowBefore(sourceKey, targetKey) {
+  if (!sourceKey || !targetKey || sourceKey === targetKey || viewMode !== 'custom') return;
+  const sourceIndex = baseRows.findIndex((row) => row.key === sourceKey);
+  const targetIndex = baseRows.findIndex((row) => row.key === targetKey);
+  if (sourceIndex < 0 || targetIndex < 0) return;
+  pushUndo(`Drag ${rowDisplayTitle(baseRows[sourceIndex])}`);
+  const rows = [...baseRows];
+  const [item] = rows.splice(sourceIndex, 1);
+  const adjustedTargetIndex = rows.findIndex((row) => row.key === targetKey);
+  rows.splice(adjustedTargetIndex, 0, item);
+  baseRows = rows;
+  renderRows();
+  renderReorderProfileHealth();
+  refreshDirtyUi();
+}
+
+function undoOrder() {
+  const last = undoOrderStack.shift();
+  if (!last) return;
+  baseRows = last.rows.map((row) => ({ ...row }));
+  renderRows();
+  renderReorderProfileHealth();
+  refreshDirtyUi();
+  showToast(`Undid: ${last.label}`);
+}
+
+function toggleRowHomeVisibility(key) {
+  const row = rowByKey(key);
+  if (!row) return;
+  baseRows = baseRows.map((item) => item.key !== key ? item : { ...item, enabled: item.enabled === false });
+  renderRows();
+  renderReorderProfileHealth();
+  refreshDirtyUi();
+}
+
+function removeOrphanRow(key) {
+  const row = rowByKey(key);
+  if (!row || !row.remove_allowed) return showToast('Only orphaned Home rows can be removed directly. Use Hide from Home for valid rows.', 'error');
+  const label = rowDisplayTitle(row);
+  if (!window.confirm(`Remove stale Home row?\n\n${label}\n\nThis only removes the orphaned Home layout reference. It does not delete a real collection.`)) return;
+  removedRowKeys.add(key);
+  baseRows = baseRows.filter((item) => item.key !== key);
+  selectedCatalogKeys.delete(key);
+  renderRows();
+  renderReorderProfileHealth();
+  refreshDirtyUi();
+  showToast('Staged orphan Home row removal. Click Save changes.');
+}
+
+function updateBulkSelectionUi() {
+  const validKeys = new Set(baseRows.filter(isCatalogRow).map((row) => row.key));
+  selectedCatalogKeys = new Set([...selectedCatalogKeys].filter((key) => validKeys.has(key)));
+  const selectedRows = baseRows.filter((row) => isCatalogRow(row) && selectedCatalogKeys.has(row.key));
+  const ready = Boolean(selectedProfileId && baseRows.length && !loadInFlight && !saveInFlight);
+  if (el.bulkSelectBar) el.bulkSelectBar.style.display = baseRows.length ? '' : 'none';
+  if (el.bulkSelectedCount) {
+    const hiddenCount = selectedRows.filter((row) => row.enabled === false).length;
+    const visibleCount = selectedRows.length - hiddenCount;
+    el.bulkSelectedCount.textContent = selectedRows.length ? `${selectedRows.length} selected, ${visibleCount} visible, ${hiddenCount} hidden` : 'No catalogs selected';
+  }
+  if (el.selectVisibleCatalogsBtn) el.selectVisibleCatalogsBtn.disabled = !ready;
+  if (el.clearCatalogSelectionBtn) el.clearCatalogSelectionBtn.disabled = !selectedRows.length;
+  if (el.hideSelectedCatalogsBtn) el.hideSelectedCatalogsBtn.disabled = !ready || !selectedRows.length;
+  if (el.showSelectedCatalogsBtn) el.showSelectedCatalogsBtn.disabled = !ready || !selectedRows.length;
+}
+
+function selectVisibleCatalogs() {
+  selectedCatalogKeys = new Set(getDisplayRows().filter((row) => isCatalogRow(row) && row.enabled !== false).map((row) => row.key));
+  renderRows();
+}
+
+function bulkSetHomeVisibility(visible) {
+  if (!selectedCatalogKeys.size) return;
+  const selected = new Set(selectedCatalogKeys);
+  baseRows = baseRows.map((row) => selected.has(row.key) ? { ...row, enabled: Boolean(visible) } : row);
+  renderRows();
+  renderReorderProfileHealth();
+  refreshDirtyUi();
+  showToast(visible ? 'Staged selected rows to show in Home.' : 'Staged selected rows to hide from Home.');
+}
+
+function renderReorderProfileHealth() {
+  const profile = loadedProfileSummary || currentSelectedProfile();
+  const profileName = profile?.name || profile?.profile_name || (selectedProfileId ? `Profile ${selectedProfileId}` : 'Not loaded');
+  const health = rowHealthSummary();
+  if (el.healthProfileLabel) el.healthProfileLabel.textContent = profileName;
+  if (el.healthPlatformLabel) el.healthPlatformLabel.textContent = platformLabel(selectedPlatform);
+  if (el.healthHomeRowCount) el.healthHomeRowCount.textContent = String(health.total || 0);
+  if (el.healthHiddenCount) el.healthHiddenCount.textContent = String(health.hidden || 0);
+  if (el.healthDuplicateOrderCount) el.healthDuplicateOrderCount.textContent = String((health.duplicateRawOrderCount || 0) + (health.duplicateTitleCount || 0));
+  if (el.healthProfileDetail) {
+    if (!baseRows.length) {
+      el.healthProfileDetail.textContent = 'Load Home rows to see profile health.';
+      return;
+    }
+    const loadedLabel = loadedAtTimestamp ? loadedAtTimestamp.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'now';
+    const warnings = [];
+    if (stateAddonInventorySource === 'profile_1_inherited_addons') warnings.push(`Catalog inventory is coming from Profile ${stateEffectiveAddonProfileId || 1} because this profile inherits add-ons.`);
+    if (health.duplicateRawOrderCount) warnings.push(`${health.duplicateRawOrderCount} duplicate raw order position${health.duplicateRawOrderCount === 1 ? '' : 's'} detected. Saving will normalize orders.`);
+    if (health.orphanCollectionCount) warnings.push(`${health.orphanCollectionCount} orphan collection row${health.orphanCollectionCount === 1 ? '' : 's'} found.`);
+    el.healthProfileDetail.innerHTML = `${formatCount(health.catalogs, 'catalog')} · ${formatCount(health.collections, 'collection')} · ${formatCount(health.visible, 'visible row')} · loaded ${loadedLabel}${warnings.length ? `<div class="rh-health-warning">${warnings.map(escHtml).join('<br>')}</div>` : ''}`;
+  }
+}
+
+function refreshDirtyUi() {
+  const dirty = hasUnsavedChanges();
+  el.orderUnsavedPill?.classList.toggle('is-visible', dirty);
+  if (el.saveBtn) el.saveBtn.classList.toggle('has-unsaved-order', dirty);
+  if (el.undoOrderBtn) {
+    el.undoOrderBtn.disabled = !baseRows.length || !undoOrderStack.length || loadInFlight || saveInFlight;
+    const last = undoOrderStack[0];
+    el.undoOrderBtn.title = last ? `Undo: ${last.label}` : 'No reorder move to undo yet.';
+  }
+  if (saveInFlight) setOrderSaveStatus('Saving changes to Nuvio…');
+  else if (!selectedProfileId) setOrderSaveStatus('Choose a profile to load Home rows.');
+  else if (!baseRows.length) setOrderSaveStatus('Load Home rows before editing.');
+  else if (dirty && savePlatformScope !== selectedPlatform) setOrderSaveStatus(`Ready to save current ${platformLabel(selectedPlatform)} layout to ${platformScopeLabel(savePlatformScope)}.`);
+  else if (dirty && pendingApplyHomeToInheritedProfileIds.length) setOrderSaveStatus('Ready to apply this layout to selected inherited profiles.');
+  else if (dirty) setOrderSaveStatus('Unsaved changes are ready to save.');
+  else setOrderSaveStatus('Home rows are synced to Nuvio.');
+  updateButtons();
+}
+
+function updateButtons() {
+  const readyToLoad = Boolean(loggedIn && selectedProfileId && !loadInFlight && !profilesInFlight);
+  const readyWithRows = Boolean(readyToLoad && baseRows.length && !saveInFlight);
+  if (el.loadStateBtn) el.loadStateBtn.disabled = !readyToLoad;
+  if (el.emptyLoadBtn) el.emptyLoadBtn.disabled = !readyToLoad;
+  if (el.reloadBtn) el.reloadBtn.disabled = !readyWithRows;
+  if (el.saveBtn) el.saveBtn.disabled = !readyWithRows || !hasUnsavedChanges();
+  if (el.refreshProfilesBtn) el.refreshProfilesBtn.disabled = profilesInFlight || !loggedIn;
+  updateBulkSelectionUi();
+}
+
+function confirmCrossPlatformSave() {
+  if (savePlatformScope === selectedPlatform) return true;
+  return window.confirm(`You are viewing ${platformLabel(selectedPlatform)}. This will use the current ${platformLabel(selectedPlatform)} Home row order and write it to ${platformScopeLabel(savePlatformScope)}. Continue?`);
+}
+
+async function saveState() {
+  if (!baseRows.length || saveInFlight) return;
+  if (!confirmCrossPlatformSave()) return;
+  if (pendingApplyHomeToInheritedProfileIds.length) {
+    const names = pendingApplyHomeToInheritedProfileIds.join(', ');
+    if (!window.confirm(`Also save this same Home layout to inherited profile(s): ${names}?`)) return;
+  }
+  saveInFlight = true;
+  refreshDirtyUi();
+  showBanner('Saving Home layout to Nuvio…');
+  try {
+    const payload = {
+      profile_id: selectedProfileId,
+      platform: selectedPlatform,
+      save_platform_scope: savePlatformScope,
+      ordered_keys: orderKeys(),
+      updates: baseRows.map((row) => ({ home_key: row.key, enabled: row.enabled !== false })),
+      removed_keys: [...removedRowKeys],
+      apply_to_inherited_profile_ids: pendingApplyHomeToInheritedProfileIds,
+      manifest_updates: [],
+    };
+    const resp = await apiPatch('/api/nuvio/reorder-home/save', payload);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.success) throw new Error(data.error || `Failed to save Home rows (${resp.status})`);
+    removedRowKeys.clear();
+    undoOrderStack = [];
+    pendingApplyHomeToInheritedProfileIds = [];
+    if (savePlatformScope !== selectedPlatform) {
+      savePlatformScope = selectedPlatform;
+      if (el.savePlatformScopeSelect) el.savePlatformScopeSelect.value = selectedPlatform;
+    }
+    savedRowsFingerprint = currentRowsFingerprint();
+    renderInheritedApplyPanel();
+    const inheritedCount = Array.isArray(data.inherited_home_apply_results) ? data.inherited_home_apply_results.length : 0;
+    showToast(`Saved ${data.saved_row_count || baseRows.length} rows to ${platformScopeLabel(data.saved_platforms?.length === 2 ? 'both' : (data.saved_platforms?.[0] || savePlatformScope))}${inheritedCount ? ` and ${inheritedCount} inherited profile${inheritedCount === 1 ? '' : 's'}` : ''}.`);
+    refreshDirtyUi();
+    renderReorderProfileHealth();
+  } catch (err) {
+    showToast(err.message || String(err), 'error', 6500);
+  } finally {
+    saveInFlight = false;
+    showBanner('');
+    refreshDirtyUi();
+  }
+}
+
+function setViewMode(mode) {
+  viewMode = mode === 'alpha' ? 'alpha' : 'custom';
+  el.viewModeCustomBtn?.classList.toggle('is-active', viewMode === 'custom');
+  el.viewModeAlphaBtn?.classList.toggle('is-active', viewMode === 'alpha');
+  el.viewModeCustomBtn?.setAttribute('aria-pressed', viewMode === 'custom' ? 'true' : 'false');
+  el.viewModeAlphaBtn?.setAttribute('aria-pressed', viewMode === 'alpha' ? 'true' : 'false');
+  renderRows();
+}
+
+function bindEvents() {
+  el.loginBtn?.addEventListener('click', handleLogin);
+  el.emailInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') handleLogin(); });
+  el.passwordInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') handleLogin(); });
+  el.logoutBtn?.addEventListener('click', handleLogout);
+  el.refreshProfilesBtn?.addEventListener('click', loadProfiles);
+  el.loadStateBtn?.addEventListener('click', loadState);
+  el.emptyLoadBtn?.addEventListener('click', loadState);
+  el.reloadBtn?.addEventListener('click', loadState);
+  el.saveBtn?.addEventListener('click', saveState);
+  el.undoOrderBtn?.addEventListener('click', undoOrder);
+  el.platformSelect?.addEventListener('change', () => {
+    selectedPlatform = el.platformSelect.value || 'tv';
+    savePlatformScope = selectedPlatform;
+    if (el.savePlatformScopeSelect) el.savePlatformScopeSelect.value = savePlatformScope;
+    clearLoadedRows();
+    renderReorderProfileHealth();
+    updateButtons();
+  });
+  el.savePlatformScopeSelect?.addEventListener('change', () => {
+    savePlatformScope = el.savePlatformScopeSelect.value || selectedPlatform;
+    refreshDirtyUi();
+  });
+  el.viewModeCustomBtn?.addEventListener('click', () => setViewMode('custom'));
+  el.viewModeAlphaBtn?.addEventListener('click', () => setViewMode('alpha'));
+  el.searchInput?.addEventListener('input', () => { searchQuery = el.searchInput.value || ''; searchMatchIndex = 0; renderRows(); });
+  el.searchPrevBtn?.addEventListener('click', () => jumpSearch(-1));
+  el.searchNextBtn?.addEventListener('click', () => jumpSearch(1));
+  el.rowTypeFilter?.addEventListener('change', () => { rowTypeFilter = el.rowTypeFilter.value || 'all'; renderRows(); });
+  el.statusFilter?.addEventListener('change', () => { statusFilter = el.statusFilter.value || 'all'; renderRows(); });
+  el.duplicatesOnlyToggle?.addEventListener('change', () => { duplicatesOnly = Boolean(el.duplicatesOnlyToggle.checked); renderRows(); });
+  el.hideHiddenCatalogsToggle?.addEventListener('change', () => { hideHiddenCatalogs = Boolean(el.hideHiddenCatalogsToggle.checked); renderRows(); });
+  el.positionEditToggle?.addEventListener('change', () => { positionEditUnlocked = Boolean(el.positionEditToggle.checked); renderRows(); });
+  el.selectVisibleCatalogsBtn?.addEventListener('click', selectVisibleCatalogs);
+  el.clearCatalogSelectionBtn?.addEventListener('click', () => { selectedCatalogKeys.clear(); renderRows(); });
+  el.hideSelectedCatalogsBtn?.addEventListener('click', () => bulkSetHomeVisibility(false));
+  el.showSelectedCatalogsBtn?.addEventListener('click', () => bulkSetHomeVisibility(true));
+}
+
+function revealCards() {
+  requestAnimationFrame(() => document.querySelectorAll('.reveal').forEach((node, index) => {
+    setTimeout(() => node.classList.add('is-visible'), Math.min(index * 45, 240));
+  }));
+}
+
+async function init() {
+  bindEvents();
+  revealCards();
+  selectedPlatform = el.platformSelect?.value || 'tv';
+  savePlatformScope = el.savePlatformScopeSelect?.value || selectedPlatform;
+  if (loggedIn) {
+    showLoggedInUi(bootstrap.email || '');
+    await loadProfiles();
+  } else {
+    showLoggedOutUi();
+  }
+  renderRows();
+  renderReorderProfileHealth();
+  updateButtons();
+}
+
+document.addEventListener('DOMContentLoaded', init);

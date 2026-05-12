@@ -1,0 +1,58 @@
+
+services:
+  nuvio-reorder:
+    build: .
+    container_name: nuvio-reorder
+    restart: unless-stopped
+
+    # Phase 3 hardening: standalone env only.
+    # Do not point this public-facing utility at the main NuvioSync environment file.
+    env_file:
+      - .env
+
+    environment:
+      - FLASK_PRODUCTION=true
+      - FLASK_ENV=production
+      - TRUST_PROXY=true
+      - SESSION_COOKIE_SECURE=true
+      - SESSION_COOKIE_SAMESITE=Lax
+      - PERMANENT_SESSION_LIFETIME_HOURS=8
+      - PORT=7862
+      - LOG_LEVEL=INFO
+      - NUVIO_API_DEBUG=false
+      - PUBLIC_ERROR_DETAILS=false
+      - SECURITY_HEADERS=true
+      - CACHE_CONTROL_NO_STORE=true
+      - HEALTH_REVEALS_CONFIG=false
+      - LOGIN_RATE_LIMIT_CALLS=5
+      - LOGIN_RATE_LIMIT_WINDOW=300
+      - LOGIN_LOCKOUT_SECONDS=900
+      - API_RATE_LIMIT_CALLS=180
+      - API_RATE_LIMIT_WINDOW=60
+      - MAX_CONTENT_LENGTH_BYTES=2097152
+
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.nuvio-reorder.rule=Host(`nuvio-reorder.sedation.us`)"
+      - "traefik.http.routers.nuvio-reorder.entrypoints=websecure"
+      - "traefik.http.routers.nuvio-reorder.tls.certresolver=myresolver"
+      - "traefik.http.routers.nuvio-reorder.middlewares=nuvio-reorder-security"
+      - "traefik.http.middlewares.nuvio-reorder-security.headers.stsSeconds=31536000"
+      - "traefik.http.middlewares.nuvio-reorder-security.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.nuvio-reorder-security.headers.stsPreload=true"
+      - "traefik.http.middlewares.nuvio-reorder-security.headers.forceSTSHeader=true"
+      - "traefik.http.middlewares.nuvio-reorder-security.headers.frameDeny=true"
+      - "traefik.http.middlewares.nuvio-reorder-security.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.nuvio-reorder-security.headers.referrerPolicy=no-referrer"
+      - "traefik.http.services.nuvio-reorder.loadbalancer.server.port=7862"
+
+    networks:
+      - traefik_proxy
+
+networks:
+  traefik_proxy:
+    external: true

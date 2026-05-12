@@ -1,0 +1,7 @@
+.env
+*.bak
+*.backup
+.phase3_security_backup_*/
+__pycache__/
+*.pyc
+.DS_Store

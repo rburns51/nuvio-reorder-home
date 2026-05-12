@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex,nofollow,noarchive" />
+  <meta name="referrer" content="no-referrer" />
+  <meta name="color-scheme" content="dark light" />
+  <title>Nuvio Reorder</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+  <script src="{{ url_for('static', filename='subpage_theme.js') }}"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='subpage_shell.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='reorder_home.css') }}">
+</head>
+<body>
+  <noscript>This page requires JavaScript.</noscript>
+
+  <header class="subpage-header compact" id="pageHeader">
+    <div class="subpage-header-inner">
+      <div style="min-width:0;">
+        <div class="brand-title">Nuvio Reorder</div>
+        <p class="page-subtitle">Temporary login. Reorder Home. Save directly to Nuvio.</p>
+      </div>
+      <nav class="header-actions">
+        <span id="sessionLabel" class="session-pill" hidden></span>
+        <button id="themeToggleBtn" data-theme-toggle class="btn btn-ghost btn-icon" type="button" aria-label="Switch theme" aria-pressed="true" title="Toggle dark / light theme"><i class="bi bi-sun" aria-hidden="true"></i></button>
+        <button id="logoutBtn" class="btn btn-ghost btn-icon" type="button" title="Logout" aria-label="Logout" hidden><i class="bi bi-box-arrow-right" aria-hidden="true"></i></button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="page-shell rh-shell">
+    <section id="loginCard" class="login-wrap reveal">
+      <div class="card login-card">
+        <div class="card-head">
+          <h3><i class="bi bi-shield-lock"></i> Log in to Nuvio</h3>
+        </div>
+        <div class="card-body login-body">
+          <p class="hint login-copy">Sign in once to edit this Nuvio account's Home layout. Your password is used only for this login request and is not stored by this app. The temporary session is kept in an encrypted browser cookie and clears when you log out.</p>
+          <label class="form-label" for="emailInput">Nuvio email</label>
+          <input id="emailInput" class="input" type="email" autocomplete="username" placeholder="email@example.com" />
+          <label class="form-label" for="passwordInput">Nuvio password</label>
+          <input id="passwordInput" class="input" type="password" autocomplete="current-password" placeholder="••••••••" />
+          <button id="loginBtn" class="btn btn-primary" type="button"><i class="bi bi-box-arrow-in-right"></i> Log in and load profiles</button>
+          <div id="loginStatus" class="rh-info-bar" style="display:none;"></div>
+          <div class="login-note">
+            <strong>Privacy & security:</strong> this standalone tool uses a temporary encrypted browser session, production security headers, no-store cache headers, rate limits, and noindex protection. Log out when finished to clear the session cookie.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="appShell" hidden>
+      <section class="card reveal page-guide-card density-guide page-guide-card--compact">
+        <div class="page-guide-strip">
+          <div>
+            <p class="page-guide-kicker">Reorder Home Only</p>
+            <h2 class="page-guide-title">Arrange your Nuvio Home rows</h2>
+            <p class="page-guide-body">Pick a profile, load TV or Mobile, reorder rows, hide or show Home rows, then save straight back to Nuvio.</p>
+          </div>
+          <div class="page-guide-actions page-guide-actions--compact">
+            <span class="page-guide-pill"><i class="bi bi-shield-check"></i> Temporary session</span>
+            <span class="page-guide-pill"><i class="bi bi-robot"></i> Noindex</span>
+          </div>
+        </div>
+        <details class="page-guide-details page-guide-details--full">
+          <summary>Details</summary>
+          <div class="page-guide-details-body">
+            <div class="page-guide-pills">
+              <span class="page-guide-pill">TV/Mobile separate</span>
+              <span class="page-guide-pill">Profile-specific</span>
+              <span class="page-guide-pill">A-Z check is preview only</span>
+              <span class="page-guide-pill">Save TV, Mobile, or both</span>
+              <span class="page-guide-pill">No passwords saved</span>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <div class="rh-layout">
+        <aside class="section-stack">
+          <section class="card reveal">
+            <div class="card-head"><h3><i class="bi bi-person-circle"></i> Profile</h3></div>
+            <div class="card-body">
+              <p class="page-subtitle" style="margin-bottom:.45rem;">Choose which Nuvio profile Home layout to edit.</p>
+              <div id="profileList" class="list"><p class="hint">Loading profiles…</p></div>
+              <button id="refreshProfilesBtn" class="btn btn-ghost" type="button" style="width:100%;margin-top:.6rem;"><i class="bi bi-arrow-clockwise"></i> Refresh profiles</button>
+            </div>
+          </section>
+
+          <section class="card reveal">
+            <div class="card-head"><h3><i class="bi bi-tv"></i> Layout</h3></div>
+            <div class="card-body rh-section-stack">
+              <div class="rh-platform-panel">
+                <label class="pick-label" for="platformSelect">Load platform <span class="help-tip" tabindex="0" data-tip="TV and Mobile have separate Home layouts. Load the one you want to edit.">?</span></label>
+                <select id="platformSelect" class="rh-select">
+                  <option value="tv">TV Home</option>
+                  <option value="mobile">Mobile Home</option>
+                </select>
+                <label class="pick-label" for="savePlatformScopeSelect">Save destination <span class="help-tip" tabindex="0" data-tip="Choose where the currently loaded row order should be written when you click Save.">?</span></label>
+                <select id="savePlatformScopeSelect" class="rh-select">
+                  <option value="tv">TV only</option>
+                  <option value="mobile">Mobile only</option>
+                  <option value="both">TV + Mobile</option>
+                </select>
+              </div>
+              <button id="loadStateBtn" class="btn btn-primary" type="button" style="width:100%;" title="Pull the latest Home layout from Nuvio for the selected profile and platform." disabled><i class="bi bi-cloud-download"></i> Load Home rows</button>
+              <div id="inheritedApplyPanel" class="rh-panel-subtle" style="display:none;"></div>
+              <div id="reorderProfileHealth" class="rh-profile-health" aria-live="polite">
+                <div class="rh-health-pills">
+                  <span class="rh-health-pill"><span>Profile</span><strong id="healthProfileLabel">Not loaded</strong></span>
+                  <span class="rh-health-pill"><span>Platform</span><strong id="healthPlatformLabel">TV</strong></span>
+                  <span class="rh-health-pill"><span>Rows</span><strong id="healthHomeRowCount">0</strong></span>
+                  <span class="rh-health-pill"><span>Hidden</span><strong id="healthHiddenCount">0</strong></span>
+                  <span class="rh-health-pill"><span>Dupes</span><strong id="healthDuplicateOrderCount">0</strong></span>
+                </div>
+                <div id="healthProfileDetail" class="hint rh-profile-health-detail">Load Home rows to see profile health.</div>
+              </div>
+            </div>
+          </section>
+        </aside>
+
+        <section class="card reveal">
+          <div class="card-head rh-card-head-wrap">
+            <div>
+              <h3><i class="bi bi-list-ol"></i> Home rows</h3>
+              <span id="rowCountLabel" class="hint"></span>
+            </div>
+            <div class="rh-save-actions">
+              <button id="reloadBtn" class="btn" type="button" title="Discard local staged changes and reload the latest Home layout from Nuvio." disabled><i class="bi bi-arrow-clockwise"></i> Reload</button>
+              <span id="orderUnsavedPill" class="studio-unsaved-pill rh-unsaved-pill"><i class="bi bi-dot"></i> Unsaved changes</span>
+              <button id="undoOrderBtn" class="btn btn-ghost" type="button" disabled><i class="bi bi-arrow-counterclockwise"></i> Undo</button>
+              <button id="saveBtn" class="btn btn-primary" type="button" title="Push the staged order and Home visibility changes to Nuvio." disabled><i class="bi bi-cloud-upload"></i> Save changes</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="rh-toolbar">
+              <div class="segmented-control" role="group" aria-label="View mode">
+                <button id="viewModeCustomBtn" class="btn btn-ghost is-active" type="button" aria-pressed="true" title="Your real saved Home order. Reordering is only enabled here.">Custom order</button>
+                <button id="viewModeAlphaBtn" class="btn btn-ghost" type="button" aria-pressed="false" title="Temporary alphabetical check to find duplicates, odd names, and messy rows. It does not change saved order.">A-Z check</button>
+              </div>
+              <label class="inline-check" title="Hide rows that are already staged as hidden from Home."><input id="hideHiddenCatalogsToggle" type="checkbox"> Hide hidden</label>
+              <label class="inline-check" title="Allow direct typing into row number boxes. Keep off to avoid accidental jumps."><input id="positionEditToggle" type="checkbox"> Unlock number edit</label>
+              <span id="orderSaveStatusNote" class="hint">Load Home rows before editing.</span>
+            </div>
+
+            <div class="rh-toolbar-search">
+              <input id="searchInput" class="input" type="search" placeholder="Find a row by title, add-on, type, collection, or ID" autocomplete="off">
+              <button id="searchPrevBtn" class="btn btn-ghost" type="button" disabled><i class="bi bi-chevron-up"></i> Prev</button>
+              <button id="searchNextBtn" class="btn btn-ghost" type="button" disabled><i class="bi bi-chevron-down"></i> Next</button>
+              <span id="searchMatchLabel" class="rh-match-count hint">No search</span>
+            </div>
+
+            <div class="rh-filter-row">
+              <select id="rowTypeFilter" class="input" aria-label="Filter row type" title="Filter the list to catalogs, collections, or both.">
+                <option value="all">All row types</option>
+                <option value="catalog">Catalogs only</option>
+                <option value="collection">Collections only</option>
+              </select>
+              <select id="statusFilter" class="input" aria-label="Filter visibility status" title="Filter rows by visible, hidden, warnings, or all rows.">
+                <option value="all">All visibility</option>
+                <option value="visible">Visible in Home</option>
+                <option value="hidden">Hidden from Home</option>
+                <option value="warnings">Warnings / orphan rows</option>
+              </select>
+              <label class="inline-check" title="Show rows where Nuvio returned duplicate raw order positions or similar duplicate titles."><input id="duplicatesOnlyToggle" type="checkbox"> Duplicate raw orders only</label>
+            </div>
+
+            <div id="bulkSelectBar" class="rh-bulk-select-bar" style="display:none;">
+              <div class="rh-bulk-select-copy">
+                <strong><i class="bi bi-check2-square"></i> Bulk Home visibility</strong>
+                <span id="bulkSelectedCount" class="hint">No catalogs selected</span>
+                <span class="hint">This only toggles whether selected rows appear on the Home screen.</span>
+              </div>
+              <div class="rh-bulk-select-actions">
+                <button id="selectVisibleCatalogsBtn" class="btn btn-ghost" type="button" disabled><i class="bi bi-ui-checks"></i> Select visible rows</button>
+                <button id="clearCatalogSelectionBtn" class="btn btn-ghost" type="button" disabled><i class="bi bi-x-circle"></i> Clear</button>
+                <button id="hideSelectedCatalogsBtn" class="btn btn-danger" type="button" disabled><i class="bi bi-eye-slash"></i> Hide selected</button>
+                <button id="showSelectedCatalogsBtn" class="btn btn-ghost" type="button" disabled><i class="bi bi-eye"></i> Show selected</button>
+              </div>
+            </div>
+
+            <div id="syncProgressBanner" class="rh-info-bar" style="display:none;"></div>
+            <div id="revertBanner" class="rh-revert-banner" style="display:none;"><i class="bi bi-shield-check"></i><span>A-Z check is a temporary alphabetical view for spotting duplicates and odd rows. Saving still keeps your custom order.</span></div>
+            <div id="infoBar" class="rh-info-bar" style="display:none;"></div>
+
+            <div id="rowList" class="rh-row-list">
+              <div class="empty-state">
+                <i class="bi bi-list-ol"></i>
+                <p>Select a profile, then load your Home rows to begin reordering.</p>
+                <button id="emptyLoadBtn" class="btn btn-primary" type="button" disabled><i class="bi bi-cloud-download"></i> Load Home rows</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <div id="toastRegion" class="toast-region" aria-live="polite"></div>
+
+  <script nonce="{{ csp_nonce }}">
+    window.reorderHomeBootstrap = {{ bootstrap | tojson }};
+  </script>
+  <script src="{{ url_for('static', filename='reorder_home.js') }}"></script>
+</body>
+</html>
