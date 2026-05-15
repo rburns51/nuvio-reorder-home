@@ -138,7 +138,8 @@
             <div class="rh-toolbar">
               <div class="segmented-control" role="group" aria-label="View mode">
                 <button id="viewModeCustomBtn" class="btn btn-ghost is-active" type="button" aria-pressed="true" title="Your real saved Home order. Reordering is only enabled here.">Custom order</button>
-                <button id="viewModeAlphaBtn" class="btn btn-ghost" type="button" aria-pressed="false" title="Temporary alphabetical check to find duplicates, odd names, and messy rows. It does not change saved order.">A-Z check</button>
+                <button id="viewModeAlphaBtn" class="btn btn-ghost" type="button" aria-pressed="false" title="Temporary alphabetical review. Rows are sorted alphabetically and all editing is locked in this mode.">A-Z check</button>
+                  <span class="rh-help-dot" role="img" aria-label="A-Z check help" title="A-Z check sorts catalog rows alphabetically for review only. Editing is locked in this mode so you can safely scan names without changing the saved Home order. Switch back to Custom order to move, hide, unhide, rename, or save."><i class="bi bi-info-circle"></i></span>
               </div>
               <label class="inline-check" title="Hide rows that are already staged as hidden from Home."><input id="hideHiddenCatalogsToggle" type="checkbox"> Hide hidden</label>
               <label class="inline-check" title="Allow direct typing into row number boxes. Keep off to avoid accidental jumps."><input id="positionEditToggle" type="checkbox"> Unlock number edit</label>
@@ -172,17 +173,20 @@
                 <strong><i class="bi bi-check2-square"></i> Bulk Home visibility</strong>
                 <span id="bulkSelectedCount" class="hint">No catalogs selected</span>
                 <span class="hint">This only toggles whether selected rows appear on the Home screen.</span>
+                <!-- RENAME_CATALOGS_AND_BULK_SELECT_V1 -->
+                <span class="hint">Select shown means every catalog currently displayed by your filters, including rows already hidden from Home.</span>
               </div>
               <div class="rh-bulk-select-actions">
-                <button id="selectVisibleCatalogsBtn" class="btn btn-ghost" type="button" disabled><i class="bi bi-ui-checks"></i> Select visible rows</button>
-                <button id="clearCatalogSelectionBtn" class="btn btn-ghost" type="button" disabled><i class="bi bi-x-circle"></i> Clear</button>
+                <button id="selectShownCatalogsBtn" class="btn btn-ghost" type="button" disabled title="Select every catalog currently shown by the filters, including visible and hidden Home rows."><i class="bi bi-ui-checks"></i> Select shown</button>
+                <button id="selectShownHiddenCatalogsBtn" class="btn btn-ghost" type="button" disabled title="Select only the currently shown catalog rows that are hidden from Home, useful before Show selected."><i class="bi bi-eye-slash"></i> Select hidden rows</button>
+                <button id="clearCatalogSelectionBtn" class="btn btn-ghost" type="button" disabled><i class="bi bi-x-circle"></i> Unselect all</button>
                 <button id="hideSelectedCatalogsBtn" class="btn btn-danger" type="button" disabled><i class="bi bi-eye-slash"></i> Hide selected</button>
-                <button id="showSelectedCatalogsBtn" class="btn btn-ghost" type="button" disabled><i class="bi bi-eye"></i> Show selected</button>
+                <button id="showSelectedCatalogsBtn" class="btn btn-ghost" type="button" disabled title="Unhide the selected catalog rows so they appear on Home after saving."><i class="bi bi-eye"></i> Unhide selected</button>
               </div>
             </div>
 
             <div id="syncProgressBanner" class="rh-info-bar" style="display:none;"></div>
-            <div id="revertBanner" class="rh-revert-banner" style="display:none;"><i class="bi bi-shield-check"></i><span>A-Z check is a temporary alphabetical view for spotting duplicates and odd rows. Saving still keeps your custom order.</span></div>
+            <div id="revertBanner" class="rh-revert-banner" style="display:none;"><i class="bi bi-shield-check"></i><span>A-Z check is review-only. Rows are sorted alphabetically, all editing is locked, and your saved custom order is untouched.</span><!-- REORDER_HOME_TOUCH_DRAG_AZ_LOCK_V2 --></div>
             <div id="infoBar" class="rh-info-bar" style="display:none;"></div>
 
             <div id="rowList" class="rh-row-list">

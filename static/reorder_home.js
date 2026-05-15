@@ -4,6 +4,8 @@
  */
 'use strict';
 
+// RENAME_CATALOGS_AND_BULK_SELECT_V1
+// REORDER_HOME_TOUCH_DRAG_AZ_LOCK_V2
 const bootstrap = window.reorderHomeBootstrap || {};
 let CSRF_TOKEN = bootstrap.csrfToken || '';
 
@@ -37,8 +39,15 @@ let stateAddonInventorySource = 'selected_profile';
 let stateInheritedAddonProfiles = [];
 let pendingApplyHomeToInheritedProfileIds = [];
 let dragKey = null;
+let pointerDrag = null;
+let dragDropTargetKey = null;
+let dragDropPlacement = 'before';
+let autoScrollRaf = null;
+let autoScrollVelocity = 0;
 let loginHideTimer = null;
 const MAX_ORDER_UNDO = 12;
+const DRAG_AUTO_SCROLL_EDGE_PX = 92;
+const DRAG_AUTO_SCROLL_MAX_PX = 18;
 
 const el = {
   loginCard: document.getElementById('loginCard'),
@@ -88,7 +97,8 @@ const el = {
   healthProfileDetail: document.getElementById('healthProfileDetail'),
   bulkSelectBar: document.getElementById('bulkSelectBar'),
   bulkSelectedCount: document.getElementById('bulkSelectedCount'),
-  selectVisibleCatalogsBtn: document.getElementById('selectVisibleCatalogsBtn'),
+  selectShownCatalogsBtn: document.getElementById('selectShownCatalogsBtn'),
+  selectShownHiddenCatalogsBtn: document.getElementById('selectShownHiddenCatalogsBtn'),
   clearCatalogSelectionBtn: document.getElementById('clearCatalogSelectionBtn'),
   hideSelectedCatalogsBtn: document.getElementById('hideSelectedCatalogsBtn'),
   showSelectedCatalogsBtn: document.getElementById('showSelectedCatalogsBtn'),
@@ -187,10 +197,12 @@ function rowSearchText(row) {
 function isCatalogRow(row) { return row?.row_type === 'catalog'; }
 function rowByKey(key) { return baseRows.find((row) => row.key === key) || null; }
 function orderKeys(rows = baseRows) { return rows.map((row) => String(row?.key || '')).filter(Boolean); }
+function canEditHomeRows() { return viewMode === 'custom' && !loadInFlight && !saveInFlight; }
+function reviewOnlyMessage() { return 'A-Z check is review-only. Switch back to Custom order to edit rows.'; }
 
 function currentRowsFingerprint() {
   return JSON.stringify({
-    rows: baseRows.map((row) => ({ key: row.key, enabled: row.enabled !== false })),
+    rows: baseRows.map((row) => ({ key: row.key, enabled: row.enabled !== false, custom_title: String(row.custom_title || '') })),
     removed_keys: [...removedRowKeys].sort(),
   });
 }
@@ -599,11 +611,19 @@ function renderRow(row, displayIndex, duplicateCounts, currentSearchKey) {
   const title = rowDisplayTitle(row);
   const subParts = [];
   if (row.addon_name) subParts.push(row.addon_name);
+  if (row.row_type === 'catalog' && row.custom_title && row.raw_title && row.raw_title !== title) subParts.push(`Original: ${row.raw_title}`);
   if (row.catalog_type || row.catalog_id) subParts.push([row.catalog_type, row.catalog_id].filter(Boolean).join(' · '));
   if (row.collection_id) subParts.push(`Collection ID: ${row.collection_id}`);
   if (row.folder_count) subParts.push(`${row.folder_count} folder${row.folder_count === 1 ? '' : 's'}`);
   const subtitle = row.subtitle || subParts.filter(Boolean).join(' · ') || row.key;
   const hidden = row.enabled === false;
+  const editEnabled = canEditHomeRows();
+  const editDisabledAttr = editEnabled ? '' : 'disabled';
+  const editLockedTitle = editEnabled ? '' : ' A-Z check is review-only. Switch back to Custom order to edit.';
+  const isRenamed = row.row_type === 'catalog' && Boolean(String(row.custom_title || '').trim());
+  const renameButton = row.row_type === 'catalog'
+    ? `<button class="rh-inline-icon-btn" type="button" data-action="rename-catalog" data-key="${escHtml(row.key)}" ${editDisabledAttr} title="Rename this Home catalog row. Leave blank to reset to the original add-on name.${editLockedTitle}" aria-label="Rename ${escHtml(title)}"><i class="bi bi-pencil-square"></i></button>`
+    : '';
   const warningTags = [];
   if (row.raw_order_duplicate) warningTags.push('<span class="rh-row-status warning"><i class="bi bi-exclamation-triangle"></i> Duplicate order</span>');
   if (duplicateCounts.get(duplicateSignature(row)) > 1) warningTags.push('<span class="rh-row-status warning"><i class="bi bi-files"></i> Similar title</span>');
@@ -614,34 +634,36 @@ function renderRow(row, displayIndex, duplicateCounts, currentSearchKey) {
     hidden ? 'is-hidden-row' : '',
     searchMatchKeys.includes(row.key) ? 'is-match' : '',
     currentSearchKey === row.key ? 'is-search-current' : '',
+    !editEnabled ? 'is-edit-locked' : '',
   ].filter(Boolean).join(' ');
   const checkbox = row.row_type === 'catalog'
-    ? `<input class="rh-catalog-select-checkbox" type="checkbox" data-action="select-catalog" data-key="${escHtml(row.key)}" ${selectedCatalogKeys.has(row.key) ? 'checked' : ''} aria-label="Select ${escHtml(title)}" title="Select this catalog row for bulk show/hide actions.">`
+    ? `<input class="rh-catalog-select-checkbox" type="checkbox" data-action="select-catalog" data-key="${escHtml(row.key)}" ${selectedCatalogKeys.has(row.key) ? 'checked' : ''} ${editDisabledAttr} aria-label="Select ${escHtml(title)}" title="Select this catalog row for bulk hide/unhide actions.${editLockedTitle}">`
     : '<span></span>';
   const visibilityButton = hidden
-    ? `<button class="rh-row-action-btn" type="button" data-action="toggle-home" data-key="${escHtml(row.key)}" title="Show this row in the Home layout"><i class="bi bi-eye"></i><span>Show</span></button>`
-    : `<button class="rh-row-action-btn" type="button" data-action="toggle-home" data-key="${escHtml(row.key)}" title="Hide this row from the Home layout"><i class="bi bi-eye-slash"></i><span>Hide</span></button>`;
+    ? `<button class="rh-row-action-btn" type="button" data-action="toggle-home" data-key="${escHtml(row.key)}" ${editDisabledAttr} title="Unhide this row so it appears in the Home layout.${editLockedTitle}"><i class="bi bi-eye"></i><span>Unhide</span></button>`
+    : `<button class="rh-row-action-btn" type="button" data-action="toggle-home" data-key="${escHtml(row.key)}" ${editDisabledAttr} title="Hide this row from the Home layout.${editLockedTitle}"><i class="bi bi-eye-slash"></i><span>Hide</span></button>`;
   const removeButton = row.remove_allowed
-    ? `<button class="rh-row-danger-btn" type="button" data-action="remove-orphan" data-key="${escHtml(row.key)}" title="${escHtml(row.remove_help || 'Remove stale Home row')}"><i class="bi bi-trash"></i><span>Remove orphan</span></button>`
+    ? `<button class="rh-row-danger-btn" type="button" data-action="remove-orphan" data-key="${escHtml(row.key)}" ${editDisabledAttr} title="${escHtml(row.remove_help || 'Remove stale Home row')}${escHtml(editLockedTitle)}"><i class="bi bi-trash"></i><span>Remove orphan</span></button>`
     : '';
   const copyButton = row.collection_id
     ? `<button class="rh-row-action-btn" type="button" data-action="copy-id" data-copy="${escHtml(row.collection_id)}" title="Copy this collection ID to your clipboard."><i class="bi bi-clipboard"></i><span>Copy ID</span></button>`
     : '';
-  return `<div class="${rowClasses}" data-row-key="${escHtml(row.key)}" draggable="${viewMode === 'custom' && !loadInFlight && !saveInFlight ? 'true' : 'false'}" title="${escHtml(title)}">
+  return `<div class="${rowClasses}" data-row-key="${escHtml(row.key)}" draggable="${editEnabled ? 'true' : 'false'}" title="${escHtml(title)}">
     <div class="rh-row-controls">
-      <button class="rh-move-btn" type="button" data-action="move-up" data-key="${escHtml(row.key)}" ${canonicalIndex <= 0 || viewMode !== 'custom' ? 'disabled' : ''} title="Move up"><i class="bi bi-chevron-up"></i></button>
-      <button class="rh-move-btn" type="button" data-action="move-down" data-key="${escHtml(row.key)}" ${canonicalIndex >= baseRows.length - 1 || viewMode !== 'custom' ? 'disabled' : ''} title="Move down"><i class="bi bi-chevron-down"></i></button>
+      <button class="rh-move-btn" type="button" data-action="move-up" data-key="${escHtml(row.key)}" ${canonicalIndex <= 0 || !editEnabled ? 'disabled' : ''} title="Move up${editLockedTitle}"><i class="bi bi-chevron-up"></i></button>
+      <button class="rh-move-btn" type="button" data-action="move-down" data-key="${escHtml(row.key)}" ${canonicalIndex >= baseRows.length - 1 || !editEnabled ? 'disabled' : ''} title="Move down${editLockedTitle}"><i class="bi bi-chevron-down"></i></button>
     </div>
     ${checkbox}
-    <span class="rh-row-drag-handle" title="Drag to reorder. Reordering is only active in Custom order view."><i class="bi bi-grip-vertical"></i></span>
-    <label class="rh-position-control" title="Unlock number edit, then type a row number to jump this row there."><span>#</span><input class="rh-position-input" type="number" min="1" max="${baseRows.length}" value="${canonicalIndex + 1}" data-key="${escHtml(row.key)}" ${positionEditUnlocked && viewMode === 'custom' ? '' : 'readonly'} ${viewMode !== 'custom' ? 'disabled' : ''}></label>
+    <span class="rh-row-drag-handle" title="Drag to reorder. Reordering is only active in Custom order view.${editLockedTitle}" aria-label="Drag row"><i class="bi bi-grip-vertical"></i><span class="rh-drag-label">Drag</span></span>
+    <label class="rh-position-control" title="Unlock number edit, then type a row number to jump this row there.${editLockedTitle}"><span>#</span><input class="rh-position-input" type="number" min="1" max="${baseRows.length}" value="${canonicalIndex + 1}" data-key="${escHtml(row.key)}" ${positionEditUnlocked && editEnabled ? '' : 'readonly'} ${!editEnabled ? 'disabled' : ''}></label>
     <div class="rh-row-info">
-      <div class="rh-row-title">${escHtml(title)}</div>
+      <div class="rh-row-title-line"><div class="rh-row-title">${escHtml(title)}</div>${renameButton}</div>
       <div class="rh-row-sub">${escHtml(subtitle)}</div>
       <div class="rh-row-tags">
         <span class="rh-row-badge ${row.row_type === 'collection' ? 'collection' : 'catalog'}">${escHtml(typeLabel)}</span>
         ${row.catalog_type && row.row_type === 'catalog' ? `<span class="rh-row-badge type-tag">${escHtml(row.catalog_type)}</span>` : ''}
         <span class="rh-row-status ${hidden ? 'hidden' : 'visible'}"><i class="bi ${hidden ? 'bi-eye-slash' : 'bi-eye'}"></i> ${hidden ? 'Hidden from Home' : 'Visible in Home'}</span>
+        ${isRenamed ? '<span class="rh-row-status renamed"><i class="bi bi-pencil-square"></i> Custom name</span>' : ''}
         ${warningTags.join('')}
       </div>
     </div>
@@ -654,7 +676,14 @@ function wireRows() {
     node.addEventListener('click', (event) => {
       const action = node.dataset.action;
       const key = node.dataset.key;
+      if (['toggle-home', 'rename-catalog', 'remove-orphan', 'move-up', 'move-down', 'select-catalog'].includes(action) && !canEditHomeRows()) {
+        showToast(reviewOnlyMessage(), 'error', 2800);
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       if (action === 'toggle-home') toggleRowHomeVisibility(key);
+      if (action === 'rename-catalog') renameCatalogRow(key);
       if (action === 'remove-orphan') removeOrphanRow(key);
       if (action === 'move-up') moveRowByDelta(key, -1);
       if (action === 'move-down') moveRowByDelta(key, 1);
@@ -675,28 +704,151 @@ function wireRows() {
   });
   el.rowList.querySelectorAll('.rh-row[draggable="true"]').forEach((rowEl) => {
     rowEl.addEventListener('dragstart', (event) => {
+      if (!canEditHomeRows()) { event.preventDefault(); return; }
       dragKey = rowEl.dataset.rowKey;
+      dragDropTargetKey = null;
+      dragDropPlacement = 'before';
       rowEl.classList.add('is-dragging');
+      el.rowList.classList.add('is-drag-active');
       event.dataTransfer.effectAllowed = 'move';
       event.dataTransfer.setData('text/plain', dragKey);
     });
-    rowEl.addEventListener('dragend', () => {
-      dragKey = null;
-      el.rowList.querySelectorAll('.is-dragging,.is-drop-target').forEach((n) => n.classList.remove('is-dragging', 'is-drop-target'));
-    });
+    rowEl.addEventListener('dragend', () => clearDragVisuals());
     rowEl.addEventListener('dragover', (event) => {
       event.preventDefault();
-      if (dragKey && dragKey !== rowEl.dataset.rowKey) rowEl.classList.add('is-drop-target');
+      autoScrollFromClientY(event.clientY);
+      updateDropTarget(rowEl, event.clientY);
     });
-    rowEl.addEventListener('dragleave', () => rowEl.classList.remove('is-drop-target'));
+    rowEl.addEventListener('dragleave', (event) => {
+      if (!rowEl.contains(event.relatedTarget)) rowEl.classList.remove('is-drop-target', 'is-drop-before', 'is-drop-after');
+    });
     rowEl.addEventListener('drop', (event) => {
       event.preventDefault();
       const sourceKey = event.dataTransfer.getData('text/plain') || dragKey;
       const targetKey = rowEl.dataset.rowKey;
-      rowEl.classList.remove('is-drop-target');
-      moveRowBefore(sourceKey, targetKey);
+      const placement = dropPlacementForRow(rowEl, event.clientY);
+      clearDragVisuals();
+      moveRowRelative(sourceKey, targetKey, placement);
     });
   });
+  el.rowList.querySelectorAll('.rh-row-drag-handle').forEach((handle) => {
+    handle.addEventListener('pointerdown', startPointerRowDrag);
+  });
+}
+
+function dropPlacementForRow(rowEl, clientY) {
+  const rect = rowEl.getBoundingClientRect();
+  return clientY > rect.top + (rect.height / 2) ? 'after' : 'before';
+}
+
+function clearDropTargetClasses() {
+  el.rowList?.querySelectorAll('.is-drop-target,.is-drop-before,.is-drop-after').forEach((node) => {
+    node.classList.remove('is-drop-target', 'is-drop-before', 'is-drop-after');
+  });
+}
+
+function updateDropTarget(rowEl, clientY) {
+  const targetKey = rowEl?.dataset?.rowKey || '';
+  if (!dragKey || !targetKey || dragKey === targetKey) return;
+  const placement = dropPlacementForRow(rowEl, clientY);
+  clearDropTargetClasses();
+  rowEl.classList.add('is-drop-target', placement === 'after' ? 'is-drop-after' : 'is-drop-before');
+  dragDropTargetKey = targetKey;
+  dragDropPlacement = placement;
+}
+
+function rowFromPoint(clientX, clientY) {
+  const node = document.elementFromPoint(clientX, clientY);
+  return node?.closest?.('.rh-row') || null;
+}
+
+function autoScrollFromClientY(clientY) {
+  const height = window.innerHeight || document.documentElement.clientHeight || 0;
+  let nextVelocity = 0;
+  if (clientY < DRAG_AUTO_SCROLL_EDGE_PX) {
+    nextVelocity = -Math.ceil(((DRAG_AUTO_SCROLL_EDGE_PX - clientY) / DRAG_AUTO_SCROLL_EDGE_PX) * DRAG_AUTO_SCROLL_MAX_PX);
+  } else if (clientY > height - DRAG_AUTO_SCROLL_EDGE_PX) {
+    nextVelocity = Math.ceil(((clientY - (height - DRAG_AUTO_SCROLL_EDGE_PX)) / DRAG_AUTO_SCROLL_EDGE_PX) * DRAG_AUTO_SCROLL_MAX_PX);
+  }
+  autoScrollVelocity = nextVelocity;
+  if (autoScrollVelocity && !autoScrollRaf) autoScrollLoop();
+}
+
+function autoScrollLoop() {
+  if (!autoScrollVelocity) {
+    autoScrollRaf = null;
+    return;
+  }
+  window.scrollBy(0, autoScrollVelocity);
+  autoScrollRaf = window.requestAnimationFrame(autoScrollLoop);
+}
+
+function stopAutoScroll() {
+  autoScrollVelocity = 0;
+  if (autoScrollRaf) window.cancelAnimationFrame(autoScrollRaf);
+  autoScrollRaf = null;
+}
+
+function clearDragVisuals() {
+  dragKey = null;
+  pointerDrag = null;
+  dragDropTargetKey = null;
+  dragDropPlacement = 'before';
+  stopAutoScroll();
+  el.rowList?.classList.remove('is-drag-active');
+  el.rowList?.querySelectorAll('.is-dragging,.is-pointer-dragging,.is-drop-target,.is-drop-before,.is-drop-after').forEach((node) => {
+    node.classList.remove('is-dragging', 'is-pointer-dragging', 'is-drop-target', 'is-drop-before', 'is-drop-after');
+  });
+}
+
+function startPointerRowDrag(event) {
+  const handle = event.currentTarget;
+  const rowEl = handle.closest('.rh-row');
+  if (!rowEl) return;
+  if (!canEditHomeRows()) {
+    showToast(reviewOnlyMessage(), 'error', 2800);
+    return;
+  }
+  if (event.button !== undefined && event.button !== 0) return;
+  event.preventDefault();
+  dragKey = rowEl.dataset.rowKey;
+  pointerDrag = { pointerId: event.pointerId, sourceKey: dragKey, handle };
+  dragDropTargetKey = null;
+  dragDropPlacement = 'before';
+  rowEl.classList.add('is-dragging', 'is-pointer-dragging');
+  el.rowList?.classList.add('is-drag-active');
+  handle.setPointerCapture?.(event.pointerId);
+
+  const onPointerMove = (moveEvent) => {
+    if (!pointerDrag || moveEvent.pointerId !== pointerDrag.pointerId) return;
+    moveEvent.preventDefault();
+    autoScrollFromClientY(moveEvent.clientY);
+    const targetRow = rowFromPoint(moveEvent.clientX, moveEvent.clientY);
+    if (targetRow && targetRow.dataset.rowKey !== pointerDrag.sourceKey) {
+      updateDropTarget(targetRow, moveEvent.clientY);
+    }
+  };
+
+  const finish = (finishEvent, cancelled = false) => {
+    if (!pointerDrag || finishEvent.pointerId !== pointerDrag.pointerId) return;
+    finishEvent.preventDefault();
+    const sourceKey = pointerDrag.sourceKey;
+    const targetKey = dragDropTargetKey;
+    const placement = dragDropPlacement;
+    handle.releasePointerCapture?.(finishEvent.pointerId);
+    document.removeEventListener('pointermove', onPointerMove);
+    document.removeEventListener('pointerup', onPointerUp);
+    document.removeEventListener('pointercancel', onPointerCancel);
+    clearDragVisuals();
+    if (!cancelled && targetKey && sourceKey !== targetKey) moveRowRelative(sourceKey, targetKey, placement);
+  };
+
+  const onPointerUp = (upEvent) => finish(upEvent, false);
+  const onPointerCancel = (cancelEvent) => finish(cancelEvent, true);
+
+  document.addEventListener('pointermove', onPointerMove, { passive: false });
+  document.addEventListener('pointerup', onPointerUp, { passive: false });
+  document.addEventListener('pointercancel', onPointerCancel, { passive: false });
 }
 
 function copyText(text) {
@@ -746,14 +898,20 @@ function moveRowToPosition(key, position) {
 }
 
 function moveRowBefore(sourceKey, targetKey) {
-  if (!sourceKey || !targetKey || sourceKey === targetKey || viewMode !== 'custom') return;
+  moveRowRelative(sourceKey, targetKey, 'before');
+}
+
+function moveRowRelative(sourceKey, targetKey, placement = 'before') {
+  if (!sourceKey || !targetKey || sourceKey === targetKey || !canEditHomeRows()) return;
   const sourceIndex = baseRows.findIndex((row) => row.key === sourceKey);
   const targetIndex = baseRows.findIndex((row) => row.key === targetKey);
   if (sourceIndex < 0 || targetIndex < 0) return;
   pushUndo(`Drag ${rowDisplayTitle(baseRows[sourceIndex])}`);
   const rows = [...baseRows];
   const [item] = rows.splice(sourceIndex, 1);
-  const adjustedTargetIndex = rows.findIndex((row) => row.key === targetKey);
+  let adjustedTargetIndex = rows.findIndex((row) => row.key === targetKey);
+  if (adjustedTargetIndex < 0) return;
+  if (placement === 'after') adjustedTargetIndex += 1;
   rows.splice(adjustedTargetIndex, 0, item);
   baseRows = rows;
   renderRows();
@@ -782,6 +940,27 @@ function toggleRowHomeVisibility(key) {
   showToast(willShow ? 'Staged row to show on Home. Click Save changes to push.' : 'Staged row to hide from Home. Click Save changes to push.', 'success', 3000);
 }
 
+function renameCatalogRow(key) {
+  const row = rowByKey(key);
+  if (!row || !isCatalogRow(row)) return showToast('Only catalog rows can be renamed here.', 'error');
+  const rawTitle = String(row.raw_title || row.title || row.catalog_id || row.key || '').trim();
+  const currentTitle = String(row.custom_title || '').trim();
+  const nextTitleRaw = window.prompt(`Rename catalog row\n\nOriginal: ${rawTitle}\n\nLeave blank to reset to the original add-on name.`, currentTitle);
+  if (nextTitleRaw === null) return;
+  const nextTitle = String(nextTitleRaw || '').trim();
+  if (nextTitle.length > 120) return showToast('Catalog names are limited to 120 characters.', 'error');
+  if (nextTitle === currentTitle) return;
+  pushUndo(`Rename ${rowDisplayTitle(row)}`);
+  baseRows = baseRows.map((item) => {
+    if (item.key !== key) return item;
+    return { ...item, custom_title: nextTitle, title: nextTitle || item.raw_title || item.title };
+  });
+  renderRows();
+  renderReorderProfileHealth();
+  refreshDirtyUi();
+  showToast(nextTitle ? 'Staged catalog rename. Click Save changes to push.' : 'Staged catalog name reset. Click Save changes to push.', 'success', 3200);
+}
+
 function removeOrphanRow(key) {
   const row = rowByKey(key);
   if (!row || !row.remove_allowed) return showToast('Only orphaned Home rows can be removed directly. Use Hide from Home for valid rows.', 'error');
@@ -801,31 +980,44 @@ function updateBulkSelectionUi() {
   selectedCatalogKeys = new Set([...selectedCatalogKeys].filter((key) => validKeys.has(key)));
   const selectedRows = baseRows.filter((row) => isCatalogRow(row) && selectedCatalogKeys.has(row.key));
   const ready = Boolean(selectedProfileId && baseRows.length && !loadInFlight && !saveInFlight);
+  const editingReady = ready && canEditHomeRows();
   if (el.bulkSelectBar) el.bulkSelectBar.style.display = baseRows.length ? '' : 'none';
   if (el.bulkSelectedCount) {
     const hiddenCount = selectedRows.filter((row) => row.enabled === false).length;
     const visibleCount = selectedRows.length - hiddenCount;
-    el.bulkSelectedCount.textContent = selectedRows.length ? `${selectedRows.length} selected, ${visibleCount} visible, ${hiddenCount} hidden` : 'No catalogs selected';
+    const shownCatalogCount = getDisplayRows().filter(isCatalogRow).length;
+    el.bulkSelectedCount.textContent = selectedRows.length ? `${selectedRows.length} selected, ${visibleCount} visible in Home, ${hiddenCount} hidden from Home` : `No catalogs selected · ${shownCatalogCount} catalog${shownCatalogCount === 1 ? '' : 's'} shown by filters`;
   }
-  if (el.selectVisibleCatalogsBtn) el.selectVisibleCatalogsBtn.disabled = !ready;
+  const shownCatalogRows = getDisplayRows().filter(isCatalogRow);
+  const shownHiddenCatalogRows = shownCatalogRows.filter((row) => row.enabled === false);
+  if (el.selectShownCatalogsBtn) el.selectShownCatalogsBtn.disabled = !editingReady || !shownCatalogRows.length;
+  if (el.selectShownHiddenCatalogsBtn) el.selectShownHiddenCatalogsBtn.disabled = !editingReady || !shownHiddenCatalogRows.length;
   if (el.clearCatalogSelectionBtn) el.clearCatalogSelectionBtn.disabled = !selectedRows.length;
-  if (el.hideSelectedCatalogsBtn) el.hideSelectedCatalogsBtn.disabled = !ready || !selectedRows.length;
-  if (el.showSelectedCatalogsBtn) el.showSelectedCatalogsBtn.disabled = !ready || !selectedRows.length;
+  if (el.hideSelectedCatalogsBtn) el.hideSelectedCatalogsBtn.disabled = !editingReady || !selectedRows.length;
+  if (el.showSelectedCatalogsBtn) el.showSelectedCatalogsBtn.disabled = !editingReady || !selectedRows.length;
 }
 
-function selectVisibleCatalogs() {
-  selectedCatalogKeys = new Set(getDisplayRows().filter((row) => isCatalogRow(row) && row.enabled !== false).map((row) => row.key));
+function selectShownCatalogs() {
+  if (!canEditHomeRows()) return showToast(reviewOnlyMessage(), 'error', 2800);
+  selectedCatalogKeys = new Set(getDisplayRows().filter(isCatalogRow).map((row) => row.key));
+  renderRows();
+}
+
+function selectShownHiddenCatalogs() {
+  if (!canEditHomeRows()) return showToast(reviewOnlyMessage(), 'error', 2800);
+  selectedCatalogKeys = new Set(getDisplayRows().filter((row) => isCatalogRow(row) && row.enabled === false).map((row) => row.key));
   renderRows();
 }
 
 function bulkSetHomeVisibility(visible) {
+  if (!canEditHomeRows()) return showToast(reviewOnlyMessage(), 'error', 2800);
   if (!selectedCatalogKeys.size) return;
   const selected = new Set(selectedCatalogKeys);
   baseRows = baseRows.map((row) => selected.has(row.key) ? { ...row, enabled: Boolean(visible) } : row);
   renderRows();
   renderReorderProfileHealth();
   refreshDirtyUi();
-  showToast(visible ? 'Staged selected rows to show in Home.' : 'Staged selected rows to hide from Home.');
+  showToast(visible ? 'Staged selected rows to unhide in Home.' : 'Staged selected rows to hide from Home.');
 }
 
 function renderReorderProfileHealth() {
@@ -863,6 +1055,7 @@ function refreshDirtyUi() {
   if (saveInFlight) setOrderSaveStatus('Saving changes to Nuvio…');
   else if (!selectedProfileId) setOrderSaveStatus('Choose a profile to load Home rows.');
   else if (!baseRows.length) setOrderSaveStatus('Load Home rows before editing.');
+  else if (viewMode === 'alpha') setOrderSaveStatus('A-Z check is review-only. Switch to Custom order to edit or save.');
   else if (dirty && savePlatformScope !== selectedPlatform) setOrderSaveStatus(`Ready to save current ${platformLabel(selectedPlatform)} layout to ${platformScopeLabel(savePlatformScope)}.`);
   else if (dirty && pendingApplyHomeToInheritedProfileIds.length) setOrderSaveStatus('Ready to apply this layout to selected inherited profiles.');
   else if (dirty) setOrderSaveStatus('Unsaved changes are ready to save.');
@@ -876,7 +1069,7 @@ function updateButtons() {
   if (el.loadStateBtn) el.loadStateBtn.disabled = !readyToLoad;
   if (el.emptyLoadBtn) el.emptyLoadBtn.disabled = !readyToLoad;
   if (el.reloadBtn) el.reloadBtn.disabled = !readyWithRows;
-  if (el.saveBtn) el.saveBtn.disabled = !readyWithRows || !hasUnsavedChanges();
+  if (el.saveBtn) el.saveBtn.disabled = !readyWithRows || !hasUnsavedChanges() || viewMode === 'alpha';
   if (el.refreshProfilesBtn) el.refreshProfilesBtn.disabled = profilesInFlight || !loggedIn;
   updateBulkSelectionUi();
 }
@@ -902,7 +1095,7 @@ async function saveState() {
       platform: selectedPlatform,
       save_platform_scope: savePlatformScope,
       ordered_keys: orderKeys(),
-      updates: baseRows.map((row) => ({ home_key: row.key, enabled: row.enabled !== false })),
+      updates: baseRows.map((row) => ({ home_key: row.key, enabled: row.enabled !== false, custom_title: String(row.custom_title || '') })),
       removed_keys: [...removedRowKeys],
       apply_to_inherited_profile_ids: pendingApplyHomeToInheritedProfileIds,
       manifest_updates: [],
@@ -942,7 +1135,7 @@ function setViewMode(mode) {
   el.viewModeAlphaBtn?.setAttribute('aria-pressed', viewMode === 'alpha' ? 'true' : 'false');
   renderRows();
   if (changed) {
-    showToast(viewMode === 'alpha' ? 'A-Z check is only a temporary view. Your saved order is unchanged.' : 'Back to Custom order. Reordering is enabled here.', 'success', 3200);
+    showToast(viewMode === 'alpha' ? 'A-Z check is review-only. Rows are sorted alphabetically and editing is locked.' : 'Back to Custom order. Reordering and editing are enabled here.', 'success', 3200);
   }
 }
 
@@ -989,7 +1182,8 @@ function bindEvents() {
     renderRows();
     showToast(positionEditUnlocked ? 'Number edit unlocked. Type a row number to move a row.' : 'Number edit locked to prevent accidental jumps.', 'success', 2600);
   });
-  el.selectVisibleCatalogsBtn?.addEventListener('click', () => { selectVisibleCatalogs(); showToast('Selected all visible catalog rows for bulk visibility actions.', 'success', 2600); });
+  el.selectShownCatalogsBtn?.addEventListener('click', () => { selectShownCatalogs(); showToast('Selected all catalog rows currently shown by your filters.', 'success', 2600); });
+  el.selectShownHiddenCatalogsBtn?.addEventListener('click', () => { selectShownHiddenCatalogs(); showToast('Selected hidden catalog rows currently shown by your filters.', 'success', 2600); });
   el.clearCatalogSelectionBtn?.addEventListener('click', () => { selectedCatalogKeys.clear(); renderRows(); });
   el.hideSelectedCatalogsBtn?.addEventListener('click', () => bulkSetHomeVisibility(false));
   el.showSelectedCatalogsBtn?.addEventListener('click', () => bulkSetHomeVisibility(true));

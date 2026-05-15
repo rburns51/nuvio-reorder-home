@@ -596,7 +596,9 @@ def reorder_home_save():
         apply_to_inherited_profile_ids = sorted({int(v) for v in inherited_raw if int(v) in {2, 3, 4}})
     except (TypeError, ValueError):
         return jsonify({"error": "apply_to_inherited_profile_ids must contain profile ids"}), 400
+    # RENAME_CATALOGS_AND_BULK_SELECT_V1: save Home visibility and optional per-row custom titles.
     visibility_by_key: Dict[str, bool] = {}
+    custom_title_by_key: Dict[str, str] = {}
     for item in visibility_updates:
         if not isinstance(item, dict):
             return jsonify({"error": "each update must be an object"}), 400
@@ -607,7 +609,12 @@ def reorder_home_save():
         if not isinstance(enabled, bool):
             return jsonify({"error": "each update.enabled must be boolean"}), 400
         visibility_by_key[home_key] = bool(enabled)
-    removed_key_set = {str(k).strip() for k in removed_keys if str(k or "").strip()}
+        if 'custom_title' in item:
+            custom_title = str(item.get('custom_title') or '').strip()
+            if len(custom_title) > 120:
+                return jsonify({'error': 'custom_title is limited to 120 characters'}), 400
+            custom_title_by_key[home_key] = custom_title
+    removed_key_set = {str(k).strip() for k in removed_keys if str(k or '').strip()}
     try:
         profiles = resolve_profile_rows(fetch_profiles(g.nuvio_session))
         profile_summary = next((p for p in profiles if int(p.get("resolved_profile_id") or 0) == profile_id), None)
@@ -628,6 +635,8 @@ def reorder_home_save():
             key = home_item_key(item)
             if key in visibility_by_key:
                 item["enabled"] = visibility_by_key[key]
+            if key in custom_title_by_key:
+                item["custom_title"] = custom_title_by_key[key]
         normalization = normalize_home_layout_payload(final_payload)
         final_payload = normalization["payload"]
         home_normalization_stats = normalization["stats"]
@@ -649,7 +658,7 @@ def reorder_home_save():
     except Exception:
         app.logger.exception("Failed to save Reorder Home state")
         return jsonify({"error": _public_error("unexpected", "save")}), 400
-    return jsonify({"success": True, "platform": platform, "saved_platforms": save_platforms, "saved_row_count": len(final_payload.get("items") or []), "removed_row_count": len(removed_key_set), "addon_inventory_source": "profile_1_inherited_addons" if effective_addon_profile_id != profile_id else "selected_profile", "effective_addon_profile_id": effective_addon_profile_id, "addon_write_locked": bool(profile_capabilities.get("addon_write_locked")), "inherited_home_apply_results": inherited_results, "duplicate_raw_orders_normalized": duplicate_raw_orders_normalized, "home_normalization_stats": home_normalization_stats, "visibility_update_count": len(visibility_by_key), "manifest_update_count": 0, "manifest_updates": []})
+    return jsonify({"success": True, "platform": platform, "saved_platforms": save_platforms, "saved_row_count": len(final_payload.get("items") or []), "removed_row_count": len(removed_key_set), "addon_inventory_source": "profile_1_inherited_addons" if effective_addon_profile_id != profile_id else "selected_profile", "effective_addon_profile_id": effective_addon_profile_id, "addon_write_locked": bool(profile_capabilities.get("addon_write_locked")), "inherited_home_apply_results": inherited_results, "duplicate_raw_orders_normalized": duplicate_raw_orders_normalized, "home_normalization_stats": home_normalization_stats, "visibility_update_count": len(visibility_by_key), "title_update_count": len(custom_title_by_key), "manifest_update_count": 0, "manifest_updates": []})
 
 
 if __name__ == "__main__":
